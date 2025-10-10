@@ -6,7 +6,7 @@
 set -e  # Exit on error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PREPROCESS_SCRIPT="$SCRIPT_DIR/../preprocess-conditionals-v4.py"
+PREPROCESS_SCRIPT="$SCRIPT_DIR/../preprocess-conditionals.py"
 
 # Check if preprocessor script exists
 if [ ! -f "$PREPROCESS_SCRIPT" ]; then

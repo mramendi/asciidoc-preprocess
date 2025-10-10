@@ -2,7 +2,7 @@
 
 This text is always shown.
 
-[role="platform:aws,onprem"]
+[role="platform:aws platform:onprem"]
 This paragraph appears for all platforms EXCEPT Azure.
 
 More text here.

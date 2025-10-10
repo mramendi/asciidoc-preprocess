@@ -240,7 +240,7 @@ endif::[]
 ```asciidoc
 . First item
 ifdef::rhel[]
-. [.product:rhel]#{empty}#RHEL-specific item
+. [.product:rhel]#{empty}# RHEL-specific item
 endif::[]
 . Last item
 ```

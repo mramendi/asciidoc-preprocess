@@ -1,0 +1,23 @@
+attributes:
+  platform: [azure,aws,onprem]
+  product: [rhel,ocp,rosa]
+
+conditionals:
+  - name: azure
+    attribute: platform
+    value: azure
+  - name: aws
+    attribute: platform
+    value: aws
+  - name: onprem
+    attribute: platform
+    value: onprem
+  - name: rhel
+    attribute: product
+    value: rhel
+  - name: ocp
+    attribute: product
+    value: ocp
+  - name: rosa
+    attribute: product
+    value: rosa

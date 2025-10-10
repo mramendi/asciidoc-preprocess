@@ -12,8 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import the module with hyphens in the name
 spec = importlib.util.spec_from_file_location(
-    "preprocess_conditionals_v4",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "preprocess-conditionals-v4.py")
+    "preprocess_conditionals",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "preprocess-conditionals.py")
 )
 preprocess_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preprocess_module)
@@ -164,20 +164,18 @@ class TestConditionalLookup(unittest.TestCase):
 
     def test_find_attribute_value_ifdef(self):
         """Test finding attribute/value for ifdef"""
-        attr, val = self.lookup.find_attribute_value('azure', ifdef=True)
-        self.assertEqual(attr, 'platform')
-        self.assertEqual(val, 'azure')
+        s = self.lookup.get_role_string_for_conditional('azure', ".", ifdef=True)
+        self.assertEqual(s, 'platform:azure')
 
     def test_find_attribute_value_ifndef(self):
         """Test finding attribute/value for ifndef"""
-        attr, val = self.lookup.find_attribute_value('azure', ifdef=False)
-        self.assertEqual(attr, 'platform')
-        self.assertEqual(val, 'aws,onprem')  # Everything except azure
+        s = self.lookup.get_role_string_for_conditional('azure', ".", ifdef=False)
+        self.assertEqual(s, 'platform:aws.platform:onprem')
 
     def test_find_unknown_conditional(self):
         """Test error handling for unknown conditional"""
         with self.assertRaises(ValueError):
-            self.lookup.find_attribute_value('unknown')
+            self.lookup.get_role_string_for_conditional('unknown', ".")
 
 
 class TestConditionalValidation(unittest.TestCase):
@@ -419,7 +417,7 @@ endif::[]
         to_delete_lines = []
         cond = indexer.get_conditional_by_opening_line(1)  # Line 1 (0-based) = "ifdef::azure[]"
 
-        process_parablock_conditional(lines, cond, 'platform', 'azure', indexer, to_insert_lines, to_delete_lines)
+        process_parablock_conditional(lines, cond, 'platform:azure', 'platform:azure', indexer, to_insert_lines, to_delete_lines)
 
         # Should have inserted a role line before line 2 (the paragraph)
         self.assertIn(2, to_insert_lines)
@@ -443,7 +441,7 @@ in the middle."""
         to_delete_lines = []
         cond = indexer.get_conditional_by_opening_line(1)  # Line 1 (0-based) = "ifdef::azure[]"
 
-        process_inline_conditional(lines, cond, 'platform', 'azure', indexer, to_delete_lines)
+        process_inline_conditional(lines, cond, 'platform:azure', indexer, to_delete_lines)
 
         # Should mark ifdef (line 1) and endif (line 3) for deletion
         self.assertIn(1, to_delete_lines)
@@ -517,7 +515,7 @@ endif::[]"""
         to_delete_lines = []
         cond = indexer.get_conditional_by_opening_line(0)
 
-        process_parablock_conditional(lines, cond, 'platform', 'azure', indexer, to_insert_lines, to_delete_lines)
+        process_parablock_conditional(lines, cond, 'platform:azure', 'platform:azure', indexer, to_insert_lines, to_delete_lines)
 
         # Apply the modifications
         apply_line_modifications(lines, to_insert_lines, to_delete_lines)

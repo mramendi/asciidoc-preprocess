@@ -331,23 +331,28 @@ class ConditionalLookup:
     def is_supported(self, conditional: str):
         return (conditional in self._cond_map)
 
-    def find_attribute_value(self, conditional: str, ifdef: bool = True) -> tuple[str, str]:
+    def get_role_string_for_conditional(self, conditional: str, separator:str, ifdef: bool = True) -> tuple[str, str]:
+        """ Find the role string for a conditional, depending on ifdef or ifndef
+        The separator is a space for the [role=] syntax and a dot for the [.role] syntax
+        """
         try:
             attr, val = self._cond_map[conditional]
         except KeyError as e:
             raise ValueError(f"Unknown conditional: {conditional!r}") from e
 
         if ifdef:
-            return (attr, val)
+            return f"{attr}:{val}"
 
-        # Build comma-separated list of everything *except* the excluded value
+        # Build list of everything *except* the excluded value
         try:
             all_vals = self._attributes[attr]
         except KeyError:
             raise KeyError(f"Attribute {attr!r} not found in config") from None
 
-        remaining = [v for v in all_vals if v != val]
-        return (attr, ",".join(remaining))
+        if not all_vals:
+            raise ValueError(f"No other values found for ifndef conditional: {conditional!r}")
+
+        return separator.join(f"{attr}:{v}" for v in all_vals if v != val)
 
 # JSON Schema for validating the YAML configuration
 CONDITIONALS_SCHEMA = {
@@ -580,7 +585,7 @@ def is_conditional_processable_as_parablock_end(conditional: Conditional, lines:
 
     return False
 
-def process_parablock_conditional(lines: List[str], conditional: Conditional, attribute: str, value: str, indexer: AsciiDocIndexer, to_insert_lines: Dict, to_delete_lines: List) -> None:
+def process_parablock_conditional(lines: List[str], conditional: Conditional, role_string_block: str, role_string_inline: str, indexer: AsciiDocIndexer, to_insert_lines: Dict, to_delete_lines: List) -> None:
     """ process a conditional as applying to one or more paragraphs/blocks/list items
        save any lines to insert in to_insert_lines and lines to delete in to_delete_lines """
 
@@ -600,17 +605,17 @@ def process_parablock_conditional(lines: List[str], conditional: Conditional, at
             # HOWEVER when the conditional encompasses en entire list,
             # the list should get the role instead
             lines[current_line]= \
-              f'. [.{attribute}:{value}]#{{empty}}#{lines[current_line][2:]}'
+              f'. [.{role_string_inline}]#{{empty}}# {lines[current_line][2:]}'
         elif (lines[current_line].startswith("[") and lines[current_line].rstrip().endswith("]")
           and not lines[current_line].startswith("[.")):
             # paraneters for the upcoming block/paragraph, add role
             until_closing_bracket=lines[current_line][:lines[current_line].rfind("]")]
-            lines[current_line]=f'{until_closing_bracket},role="{attribute}:{value}"]'
+            lines[current_line]=f'{until_closing_bracket},role="{role_string_block}"]'
             # in this specific case we treat the NEXT line as the one to which role was just added
             current_line+=1
         else:
             # need to insert a role string
-            to_insert_lines[current_line]=f'[role="{attribute}:{value}"]'
+            to_insert_lines[current_line]=f'[role="{role_string_block}"]'
 
         # the role was just added to the line so we need to find the next one
         if (block := indexer.get_block_by_opening_line(current_line)):
@@ -652,7 +657,7 @@ def process_parablock_conditional(lines: List[str], conditional: Conditional, at
               not lines[candidate].startswith("[.")):
                  current_line=candidate
 
-def process_inline_conditional(lines: List[str], conditional: Conditional, attribute: str, value: str, indexer: AsciiDocIndexer, to_delete_lines: List) -> None:
+def process_inline_conditional(lines: List[str], conditional: Conditional, role_string_inline: str, indexer: AsciiDocIndexer, to_delete_lines: List) -> None:
     """ process a conditional as applying inline to a part of one paragraph/block
        save any lines to delete in to_delete_lines """
     lineno=conditional.open_line
@@ -662,7 +667,7 @@ def process_inline_conditional(lines: List[str], conditional: Conditional, attri
 
     # in the first line inside the conditional, add the start of the role
     # NOTE: spaces at the start are not supported in asciidoc
-    lines[lineno+1]=f"[.{attribute}:{value}]#{lines[lineno+1].lstrip()}"
+    lines[lineno+1]=f"[.{role_string_inline}]#{lines[lineno+1].lstrip()}"
 
     # in the last line inside the conditional, add the end of the role
     # NOTE: spaces at the start are not supported in asciidoc
@@ -708,10 +713,12 @@ def process_conditionals(lines: List[str], indexer: AsciiDocIndexer, conditional
         if not is_conditional_processable(conditional, indexer, conditional_lookup, previous_end_line_number):
                 continue
 
-        # work out the attribute and value for the current conditional
+        # work out the role strings for the current conditional
         try:
-            attribute,value=conditional_lookup.find_attribute_value(
-             conditional.expression, (conditional.kind=="ifdef"))
+            role_string_block=conditional_lookup.get_role_string_for_conditional(
+             conditional.expression, " ", (conditional.kind=="ifdef"))
+            role_string_inline=conditional_lookup.get_role_string_for_conditional(
+             conditional.expression, " ", (conditional.kind=="ifdef"))
         except ValueError:
             print(f"WARNING: value not found (should not happen), line {lineno+1}")
             continue
@@ -722,7 +729,7 @@ def process_conditionals(lines: List[str], indexer: AsciiDocIndexer, conditional
           and is_conditional_processable_as_parablock_end(conditional, lines, indexer)):
             # this is getting processed, so mark the end line to exclude nested correctly
             previous_end_line_number=conditional.close_line
-            process_parablock_conditional(lines, conditional, attribute, value, indexer, to_insert_lines, to_delete_lines)
+            process_parablock_conditional(lines, conditional, role_string_block, role_string_inline, indexer, to_insert_lines, to_delete_lines)
         else:
             # processing as "parablock" was not possible
             # to check if we can process as inline we need to check every line in the conditional
@@ -739,7 +746,7 @@ def process_conditionals(lines: List[str], indexer: AsciiDocIndexer, conditional
                 # this is getting processed, so mark the end line to exclude nested correctly
                 previous_end_line_number=conditional.close_line
 
-                process_inline_conditional(lines, conditional, attribute, value, indexer, to_delete_lines)
+                process_inline_conditional(lines, conditional, role_string_inline, indexer, to_delete_lines)
 
     # loop is over - now insert and remove the lines as per buffers
     apply_line_modifications(lines, to_insert_lines, to_delete_lines)
