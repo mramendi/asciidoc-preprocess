@@ -1,0 +1,10 @@
+= Simple Parablock Test
+
+This is some intro text.
+
+ifdef::azure[]
+This paragraph is Azure-specific.
+It has multiple lines.
+endif::[]
+
+This is text after the conditional.

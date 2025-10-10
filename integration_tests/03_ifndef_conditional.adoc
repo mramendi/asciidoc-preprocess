@@ -1,0 +1,9 @@
+= Ifndef Test
+
+This text is always shown.
+
+ifndef::azure[]
+This paragraph appears for all platforms EXCEPT Azure.
+endif::[]
+
+More text here.

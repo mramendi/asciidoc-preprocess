@@ -1,0 +1,9 @@
+= Ifeval Conditional (should be silently ignored)
+
+Some text.
+
+ifeval::["{version}"=="2.0"]
+This uses ifeval which is not supported and should be silently ignored.
+endif::[]
+
+End.

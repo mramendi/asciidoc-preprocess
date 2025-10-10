@@ -1,0 +1,8 @@
+= Empty Conditional (WARNING)
+
+Some text.
+
+ifdef::onprem[]
+endif::[]
+
+This has an empty conditional that should warn.

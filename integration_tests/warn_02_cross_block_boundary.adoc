@@ -1,0 +1,12 @@
+= Cross Block Boundary (WARNING)
+
+Some text.
+
+ifdef::aws[]
+----
+code block starts
+endif::[]
+code block ends
+----
+
+This should warn about crossing block boundary.

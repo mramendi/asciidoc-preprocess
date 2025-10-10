@@ -1,0 +1,5 @@
+= Inline Conditional Test
+
+This is a paragraph with
+[.platform:aws]#some AWS-specific text#
+in the middle of it.

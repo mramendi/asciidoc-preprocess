@@ -1,0 +1,10 @@
+= List Items Test
+
+Here is a list with conditional items:
+
+ifdef::rhel[]
+. First RHEL-specific item
+. Second RHEL-specific item
+endif::[]
+
+Regular text after.

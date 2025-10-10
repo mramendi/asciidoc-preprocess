@@ -1,0 +1,12 @@
+= Nested Conditional (WARNING)
+
+Some text.
+
+[role="platform:azure"]
+Outer conditional content.
+ifdef::rhel[]
+This is nested and should produce a warning.
+endif::[]
+More outer content.
+
+End.

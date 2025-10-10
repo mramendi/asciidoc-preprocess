@@ -1,0 +1,8 @@
+= Ifndef Test
+
+This text is always shown.
+
+[role="platform:aws,onprem"]
+This paragraph appears for all platforms EXCEPT Azure.
+
+More text here.
