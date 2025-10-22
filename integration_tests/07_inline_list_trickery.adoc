@@ -1,0 +1,16 @@
+= Inline list trickery (conditionalised first part of step)
+
+This is some intro text.
+
+. This list item is for all platforms
+
+ifdef::azure[]
+. This start is for Azure
+endif::[]
+ifdef::aws[]
+. This start is for AWS
+endif::[]
++
+The list continues here
+
+This is text after the conditional.

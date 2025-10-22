@@ -1,12 +1,61 @@
 import re
 from typing import List, Dict, Optional, NamedTuple, Any, Set
 from dataclasses import dataclass
+from enum import Flag, auto
 import yaml
 import argparse
 import jsonschema
 from jsonschema import validate, ValidationError
 
 Line = int  # 0-based
+
+# --------------------------------------------------------------------------- #
+#  Line State Flags - can be combined for a single line                      #
+# --------------------------------------------------------------------------- #
+class LineState(Flag):
+    """
+    Flags that can be combined to describe the state of a line in AsciiDoc.
+    Multiple states can apply to the same line.
+    """
+    # Basic line types
+    BLANK = auto()                    # Completely blank line (or only whitespace)
+
+    # Block structural elements
+    IN_DELIMITED_BLOCK = auto()       # Line is inside a delimited block
+    IN_VERBATIM_BLOCK = auto()        # Line is inside a verbatim block (----, ++++, ////, ....)
+    BLOCK_DELIMITER = auto()          # Line is a block delimiter (open or close)
+
+    # Paragraph states
+    IN_PARAGRAPH = auto()             # Line is part of a paragraph
+    PARAGRAPH_START = auto()          # First line of a paragraph
+    PARAGRAPH_CONTINUATION = auto()   # Line continues a paragraph (after +)
+
+    # List states
+    LIST_ITEM = auto()                # Line starts a list item (ordered, unordered, or description)
+    UNORDERED_LIST = auto()           # Specifically an unordered list item (*, -, •)
+    ORDERED_LIST = auto()             # Specifically an ordered list item (., 1., a., etc.)
+    DESCRIPTION_LIST = auto()         # Specifically a description list item (::, :::, ;;)
+    CALLOUT_LIST = auto()             # Specifically a callout list item (<1>, <2>, etc.)
+    IN_LIST_ITEM = auto()             # Line is part of a list item's content
+    ATTACHED_TO_LIST = auto()         # Line is attached to preceding list item (via +)
+
+    # Special formatting
+    LITERAL_PARAGRAPH = auto()        # Line is part of a literal paragraph (indented)
+    ADMONITION = auto()               # Line starts with admonition label (NOTE:, TIP:, etc.)
+
+    # Metadata lines
+    BLOCK_TITLE = auto()              # Line is a block title (.Title)
+    BLOCK_ATTRIBUTES = auto()         # Line contains block attributes ([...])
+    BLOCK_ANCHOR = auto()             # Line contains block anchor ([[...]])
+
+    # Conditional directives
+    CONDITIONAL_DIRECTIVE = auto()    # Line is ifdef/ifndef/ifeval/endif
+
+    # Comments
+    COMMENT_LINE = auto()             # Line is a comment (//)
+
+    # Continuation
+    CONTINUATION_MARKER = auto()      # Line is just a continuation marker (+)
 
 # --------------------------------------------------------------------------- #
 #  Lightweight data holders                                                   #
@@ -48,6 +97,9 @@ class AsciiDocIndexer:
     # --------------------------------------------------------------------- #
     #  Pre-compiled VERBOSE regexes                                         #
     # --------------------------------------------------------------------- #
+
+    # ---------- Block delimiters ----------
+
     # 1. Four-or-more *identical* supported chars:  = * _ - . / +
     #    Line must contain ONLY that delimiter + optional trailing spaces.
     _FOUR_MORE_DELIM = re.compile(r'''
@@ -118,6 +170,188 @@ class AsciiDocIndexer:
         $
     ''', re.VERBOSE)
 
+    # ---------- List patterns (from Asciidoctor rx.rb) ----------
+
+    # 5. Unordered list item: *, -, or • (bullet) followed by content
+    #    Examples: * Foo   - Bar   • Baz
+    #    Supports nesting with multiple asterisks: **, ***, etc.
+    _UNORDERED_LIST = re.compile(r'''
+        ^                    # start of line
+        [ \t]*               # optional leading whitespace
+        (-|\*+|\u2022)       # group 1: dash, one or more asterisks, or bullet
+        [ \t]+               # required whitespace after marker
+        (.*)                 # group 2: rest of line (list item content)
+        $
+    ''', re.VERBOSE)
+
+    # 6. Ordered list item: explicit numbering or consecutive dots
+    #    Examples: . Foo   .. Bar   1. Foo   a. Foo   A. Foo
+    #    Supports: dots (., ..), arabic (1.), loweralpha (a.), upperalpha (A.)
+    #    Note: Roman numerals removed as they don't actually work in practice
+    _ORDERED_LIST = re.compile(r'''
+        ^                    # start of line
+        [ \t]*               # optional leading whitespace
+        (                    # group 1: the list marker
+          \.+                #   one or more dots (., .., ...)
+          |                  #   OR
+          \d+\.              #   arabic numbering (1., 2., ...)
+          |                  #   OR
+          [a-zA-Z]\.         #   alphabetic numbering (a., b., A., B., ...)
+        )
+        [ \t]+               # required whitespace after marker
+        (.*)                 # group 2: rest of line (list item content)
+        $
+    ''', re.VERBOSE)
+
+    # 7. Description list (labeled list): term followed by :: or ;;
+    #    Examples: foo::   bar:::   baz::::   blah;;
+    #              foo:: description text
+    #    Note: Skips comment lines starting with //
+    _DESCRIPTION_LIST = re.compile(r'''
+        ^                    # start of line
+        (?!//[^/])           # negative lookahead: not a comment line
+        [ \t]*               # optional leading whitespace
+        (                    # group 1: the term
+          [^ \t]             #   must start with non-whitespace
+          .*?                #   any characters (non-greedy)
+        )
+        (:::{0,2}|;;)        # group 2: delimiter (::, :::, ::::, or ;;)
+        (?:                  # non-capturing group for optional description
+          $                  #   either end of line
+          |                  #   OR
+          [ \t]+             #   whitespace followed by
+          (.*)               #   group 3: description on same line
+          $
+        )
+    ''', re.VERBOSE)
+
+    # 8. Callout list item: <1>, <2>, or <.> for auto-numbering
+    #    Examples: <1> Explanation   <.> Auto-numbered
+    _CALLOUT_LIST = re.compile(r'''
+        ^                    # start of line
+        <(\d+|\.)>           # group 1: number or dot in angle brackets
+        [ \t]+               # required whitespace after marker
+        (.*)                 # group 2: rest of line (explanation)
+        $
+    ''', re.VERBOSE)
+
+    # 9. Any list item detection (combined pattern for quick check)
+    #    This is used to detect if a line starts any type of list
+    #    From Asciidoctor: detects start of unordered, ordered, description, or callout lists
+    _ANY_LIST = re.compile(r'''
+        ^                    # start of line
+        (?:                  # non-capturing group for alternatives
+          [ \t]*             #   optional whitespace
+          (?:                #   followed by one of:
+            -                #     dash (unordered)
+            |                #     OR
+            \*+              #     asterisks (unordered)
+            |                #     OR
+            \.+              #     dots (ordered)
+            |                #     OR
+            \u2022           #     bullet character (unordered)
+            |                #     OR
+            \d+\.            #     arabic numbering (ordered)
+            |                #     OR
+            [a-zA-Z]\.       #     alphabetic numbering (ordered)
+          )
+          [ \t]              #   followed by whitespace (list marker complete)
+          |                  # OR
+          (?!//[^/])         #   not a comment line, followed by
+          [ \t]*             #   optional whitespace
+          [^ \t]             #   non-whitespace character
+          .*?                #   any characters (non-greedy)
+          (?::::{0,2}|;;)    #   description list delimiter
+          (?:$|[ \t])        #   followed by end or whitespace
+          |                  # OR
+          <(?:\d+|\.)>       #   callout list marker
+          [ \t]              #   followed by whitespace
+        )
+    ''', re.VERBOSE)
+
+    # ---------- Paragraph and metadata patterns ----------
+
+    # 10. Literal paragraph: line starting with space or tab
+    #     Examples: <SPACE>Foo   <TAB>Bar
+    _LITERAL_PARAGRAPH = re.compile(r'''
+        ^                    # start of line
+        ([ \t]+.*)           # group 1: whitespace followed by any content
+        $
+    ''', re.VERBOSE)
+
+    # 11. Admonition paragraph: starts with admonition label
+    #     Examples: NOTE: text   TIP: text   IMPORTANT: text
+    _ADMONITION_PARAGRAPH = re.compile(r'''
+        ^                    # start of line
+        (NOTE|TIP|IMPORTANT|WARNING|CAUTION)  # group 1: admonition style
+        :                    # literal colon
+        [ \t]+               # required whitespace
+    ''', re.VERBOSE)
+
+    # 12. Block title: line starting with dot, followed by non-dot/non-space
+    #     Examples: .Title goes here   .Figure 1
+    _BLOCK_TITLE = re.compile(r'''
+        ^                    # start of line
+        \.                   # literal dot
+        (                    # group 1: the title text
+          \.?                #   optional second dot (for floating titles)
+          [^ \t.]            #   must not start with space, tab, or dot
+          .*                 #   rest of the title
+        )
+        $
+    ''', re.VERBOSE)
+
+    # 13. Block attribute list: [...] containing attributes
+    #     Examples: [quote, Author]   [NOTE]   [{lead}]
+    _BLOCK_ATTRIBUTE_LIST = re.compile(r'''
+        ^                    # start of line
+        \[                   # opening bracket
+        (                    # group 1: attribute contents (can be empty)
+          |                  #   either empty
+          [\w.#%{,"']        #   or starts with word char, dot, hash, etc.
+          .*                 #   followed by anything
+        )
+        \]                   # closing bracket
+        $
+    ''', re.VERBOSE)
+
+    # 14. Block anchor: [[id]] or [[id, reftext]]
+    #     Examples: [[idname]]   [[idname,Reference Text]]
+    _BLOCK_ANCHOR = re.compile(r'''
+        ^                    # start of line
+        \[\[                 # opening double brackets
+        (?:                  # non-capturing group for anchor content
+          |                  #   either empty
+          (                  #   or group 1: the id
+            [A-Za-z_:]       #     must start with letter, underscore, or colon
+            [\w\-:.]*        #     followed by word chars, dash, dot, colon
+          )
+          (?:                #   optional reference text
+            ,[ \t]*          #     comma and optional whitespace
+            (.+)             #     group 2: reference text
+          )?                 #   reference text is optional
+        )
+        \]\]                 # closing double brackets
+        $
+    ''', re.VERBOSE)
+
+    # 15. Comment line: starts with //
+    #     Examples: // This is a comment
+    _COMMENT_LINE = re.compile(r'''
+        ^                    # start of line
+        //                   # two slashes
+        (?=[^/]|$)           # followed by non-slash or end of line (not ///)
+    ''', re.VERBOSE)
+
+    # 16. Continuation marker: line containing only +
+    #     Used to attach blocks or continue lists
+    _CONTINUATION = re.compile(r'''
+        ^                    # start of line
+        \+                   # single plus sign
+        [ \t]*               # optional trailing whitespace
+        $                    # end of line
+    ''', re.VERBOSE)
+
     # --------------------------------------------------------------------- #
     def __init__(self, lines: List[str]):
         self.lines: List[str] = lines
@@ -129,6 +363,10 @@ class AsciiDocIndexer:
         self._block_closer: Dict[Line, Block] = {}
         self._cond_opener: Dict[Line, Conditional] = {}
         self._cond_closer: Dict[Line, Conditional] = {}
+
+        # line state list: one entry per line, indexed by line number
+        # Initialize with empty state (no flags set) for each line
+        self.line_states: List[LineState] = [LineState(0)] * len(lines)
 
         self._parse()
 
@@ -186,6 +424,72 @@ class AsciiDocIndexer:
                 c.open_line for c in self.conditionals if c.open_line >= 0)
         return self._cond_starts_cache
 
+    # ------------------------------------------------------------------ #
+    # Line state queries                                                 #
+    # ------------------------------------------------------------------ #
+    def get_line_state(self, line: Line) -> LineState:
+        """
+        Get the combined state flags for the given line.
+        Returns LineState(0) if line is out of bounds.
+        """
+        if 0 <= line < len(self.line_states):
+            return self.line_states[line]
+        return LineState(0)
+
+    def has_state(self, line: Line, state: LineState) -> bool:
+        """
+        Check if a line has a specific state flag (or combination of flags).
+        Example: indexer.has_state(10, LineState.IN_PARAGRAPH)
+        """
+        if 0 <= line < len(self.line_states):
+            return state in self.line_states[line]
+        return False
+
+    def is_blank_line(self, line: Line) -> bool:
+        """Check if a line is blank."""
+        return self.has_state(line, LineState.BLANK)
+
+    def is_in_paragraph(self, line: Line) -> bool:
+        """Check if a line is part of a paragraph."""
+        return self.has_state(line, LineState.IN_PARAGRAPH)
+
+    def is_in_list_item(self, line: Line) -> bool:
+        """Check if a line is part of a list item."""
+        return self.has_state(line, LineState.IN_LIST_ITEM)
+
+    def is_list_item_start(self, line: Line) -> bool:
+        """Check if a line starts a list item."""
+        return self.has_state(line, LineState.LIST_ITEM)
+
+    def is_continuation_marker(self, line: Line) -> bool:
+        """Check if a line is a continuation marker (+) in list context."""
+        return self.has_state(line, LineState.CONTINUATION_MARKER)
+
+    def is_in_verbatim_block(self, line: Line) -> bool:
+        """Check if a line is inside a verbatim block."""
+        return self.has_state(line, LineState.IN_VERBATIM_BLOCK)
+
+    def is_block_delimiter(self, line: Line) -> bool:
+        """Check if a line is a block delimiter."""
+        return self.has_state(line, LineState.BLOCK_DELIMITER)
+
+    def get_list_type(self, line: Line) -> Optional[str]:
+        """
+        If line is a list item, return its type as a string.
+        Returns one of: 'unordered', 'ordered', 'description', 'callout', or None.
+        """
+        if not self.has_state(line, LineState.LIST_ITEM):
+            return None
+        if self.has_state(line, LineState.UNORDERED_LIST):
+            return 'unordered'
+        if self.has_state(line, LineState.ORDERED_LIST):
+            return 'ordered'
+        if self.has_state(line, LineState.DESCRIPTION_LIST):
+            return 'description'
+        if self.has_state(line, LineState.CALLOUT_LIST):
+            return 'callout'
+        return None
+
     # -------------------------------------------------------------------- #
     #  Internal parser                                                     #
     # -------------------------------------------------------------------- #
@@ -196,7 +500,28 @@ class AsciiDocIndexer:
         # true while we are inside ----  ++++  or  ////  and must ignore nesting
         verbatim_mode: Optional[str] = None
 
+        # Track paragraph and list state
+        in_paragraph = False
+        in_list_item = False
+        paragraph_start_line = None
+        list_item_start_line = None
+
         for lineno, raw in enumerate(self.lines):
+            # Initialize state for this line
+            state = LineState(0)  # Start with no flags
+
+            # ------------------------------------------------------------- #
+            # 0.  Basic line analysis (before structural parsing)
+            # ------------------------------------------------------------- #
+
+            # Check if line is blank
+            if raw.strip() == "":
+                state |= LineState.BLANK
+                # Blank lines break paragraphs and list items
+                in_paragraph = False
+                in_list_item = False
+                self.line_states[lineno] = state
+                continue  # Skip further analysis for blank lines
 
             # ------------------------------------------------------------- #
             # 1.  Conditional directives
@@ -211,6 +536,10 @@ class AsciiDocIndexer:
                 self.conditionals.append(c)
                 self._cond_opener[lineno] = c
                 cond_stack.append(c)
+                state |= LineState.CONDITIONAL_DIRECTIVE
+                in_paragraph = False
+                in_list_item = False
+                self.line_states[lineno] = state
                 continue
 
             # Try matching ifeval
@@ -223,6 +552,10 @@ class AsciiDocIndexer:
                 self.conditionals.append(c)
                 self._cond_opener[lineno] = c
                 cond_stack.append(c)
+                state |= LineState.CONDITIONAL_DIRECTIVE
+                in_paragraph = False
+                in_list_item = False
+                self.line_states[lineno] = state
                 continue
 
             # Try matching endif
@@ -248,20 +581,35 @@ class AsciiDocIndexer:
                     self._cond_closer[lineno] = c
                     self.conditionals.append(c)
                     print(f"WARNING: unmatched endif at line {lineno+1}")
+                state |= LineState.CONDITIONAL_DIRECTIVE
+                in_paragraph = False
+                in_list_item = False
+                self.line_states[lineno] = state
                 continue
 
             # ------------------------------------------------------------- #
             # 2.  Inside a verbatim block we only look for the closing twin
             # ------------------------------------------------------------- #
             if verbatim_mode:
+                state |= LineState.IN_VERBATIM_BLOCK | LineState.IN_DELIMITED_BLOCK
                 if raw.rstrip() == verbatim_mode:
                     # close verbatim block
+                    state |= LineState.BLOCK_DELIMITER
                     open_b = block_stack.pop()
                     open_b.close_line = lineno
                     self._block_closer[lineno] = open_b
                     verbatim_mode = None
-                # ignore everything else while verbatim
+                    in_paragraph = False
+                    in_list_item = False
+                # Save state and ignore everything else while verbatim
+                self.line_states[lineno] = state
                 continue
+
+            # Mark if we're inside any delimited block
+            if block_stack:
+                state |= LineState.IN_DELIMITED_BLOCK
+                if block_stack[-1].verbatim:
+                    state |= LineState.IN_VERBATIM_BLOCK
 
             # ------------------------------------------------------------- #
             # 3.  Delimited blocks
@@ -269,6 +617,7 @@ class AsciiDocIndexer:
             if (self._FOUR_MORE_DELIM.match(raw) or self._TABLE_DELIM.match(raw) or
              self._OPEN_BLOCK_DELIM.match(raw)):
                 delim = raw.rstrip()
+                state |= LineState.BLOCK_DELIMITER
 
                 if block_stack and block_stack[-1].delimiter == delim:
                     # close a block
@@ -300,6 +649,157 @@ class AsciiDocIndexer:
                     self.blocks.append(b)
                     self._block_opener[lineno] = b
                     block_stack.append(b)
+                in_paragraph = False
+                in_list_item = False
+                self.line_states[lineno] = state
+                continue
+
+            # ------------------------------------------------------------- #
+            # 4.  Metadata lines and special markers
+            # ------------------------------------------------------------- #
+
+            # Check for comment line
+            if self._COMMENT_LINE.match(raw):
+                state |= LineState.COMMENT_LINE
+                in_paragraph = False
+                in_list_item = False
+                self.line_states[lineno] = state
+                continue
+
+            # Check for continuation marker (+)
+            # Only valid in list context - check previous line state
+            if self._CONTINUATION.match(raw):
+                if lineno > 0:
+                    prev_state = self.line_states[lineno - 1]
+                    # Continuation marker is valid if previous line was in a list item or attached to one
+                    if (LineState.IN_LIST_ITEM in prev_state or
+                        LineState.LIST_ITEM in prev_state or
+                        LineState.ATTACHED_TO_LIST in prev_state):
+                        state |= LineState.CONTINUATION_MARKER
+                        state |= LineState.ATTACHED_TO_LIST
+                        # Don't break in_list_item state - keep it active
+                        self.line_states[lineno] = state
+                        continue
+                # If not in list context, treat as regular paragraph content
+                # Fall through to paragraph handling below
+
+            # Check for block title
+            if self._BLOCK_TITLE.match(raw):
+                state |= LineState.BLOCK_TITLE
+                in_paragraph = False
+                in_list_item = False
+                self.line_states[lineno] = state
+                continue
+
+            # Check for block anchor
+            if self._BLOCK_ANCHOR.match(raw):
+                state |= LineState.BLOCK_ANCHOR
+                in_paragraph = False
+                in_list_item = False
+                self.line_states[lineno] = state
+                continue
+
+            # Check for block attribute list
+            if self._BLOCK_ATTRIBUTE_LIST.match(raw):
+                state |= LineState.BLOCK_ATTRIBUTES
+                in_paragraph = False
+                in_list_item = False
+                self.line_states[lineno] = state
+                continue
+
+            # ------------------------------------------------------------- #
+            # 5.  List items
+            # ------------------------------------------------------------- #
+
+            # Check for unordered list
+            if self._UNORDERED_LIST.match(raw):
+                state |= LineState.LIST_ITEM
+                state |= LineState.UNORDERED_LIST
+                in_list_item = True
+                in_paragraph = False
+                list_item_start_line = lineno
+                self.line_states[lineno] = state
+                continue
+
+            # Check for ordered list
+            if self._ORDERED_LIST.match(raw):
+                state |= LineState.LIST_ITEM
+                state |= LineState.ORDERED_LIST
+                in_list_item = True
+                in_paragraph = False
+                list_item_start_line = lineno
+                self.line_states[lineno] = state
+                continue
+
+            # Check for description list
+            if self._DESCRIPTION_LIST.match(raw):
+                state |= LineState.LIST_ITEM
+                state |= LineState.DESCRIPTION_LIST
+                in_list_item = True
+                in_paragraph = False
+                list_item_start_line = lineno
+                self.line_states[lineno] = state
+                continue
+
+            # Check for callout list
+            if self._CALLOUT_LIST.match(raw):
+                state |= LineState.LIST_ITEM
+                state |= LineState.CALLOUT_LIST
+                in_list_item = True
+                in_paragraph = False
+                list_item_start_line = lineno
+                self.line_states[lineno] = state
+                continue
+
+            # ------------------------------------------------------------- #
+            # 6.  Special paragraphs (literal, admonition)
+            # ------------------------------------------------------------- #
+
+            # Check for literal paragraph (indented)
+            if self._LITERAL_PARAGRAPH.match(raw):
+                state |= LineState.LITERAL_PARAGRAPH
+                if not in_paragraph:
+                    state |= LineState.PARAGRAPH_START
+                    in_paragraph = True
+                    paragraph_start_line = lineno
+                else:
+                    state |= LineState.IN_PARAGRAPH
+                self.line_states[lineno] = state
+                continue
+
+            # Check for admonition paragraph
+            if self._ADMONITION_PARAGRAPH.match(raw):
+                state |= LineState.ADMONITION
+                state |= LineState.PARAGRAPH_START
+                in_paragraph = True
+                in_list_item = False
+                paragraph_start_line = lineno
+                self.line_states[lineno] = state
+                continue
+
+            # ------------------------------------------------------------- #
+            # 7.  Regular paragraph or list item continuation
+            # ------------------------------------------------------------- #
+
+            # If we're in a list item and the line isn't blank or a structural element,
+            # it's part of the list item content
+            if in_list_item:
+                state |= LineState.IN_LIST_ITEM
+                state |= LineState.ATTACHED_TO_LIST
+
+            # If we're in a paragraph, continue it
+            if in_paragraph:
+                state |= LineState.IN_PARAGRAPH
+
+            # Otherwise, start a new paragraph
+            if not in_paragraph and not in_list_item:
+                state |= LineState.PARAGRAPH_START
+                state |= LineState.IN_PARAGRAPH
+                in_paragraph = True
+                paragraph_start_line = lineno
+
+            self.line_states[lineno] = state
+
         # the looping over the lines is now done
         # non-closed conditionals and blocks are already saved with close_line=len(self.lines)
         # TODO: output warnings about them

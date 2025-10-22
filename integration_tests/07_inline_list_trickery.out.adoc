@@ -1,0 +1,12 @@
+= Inline list trickery (conditionalised first part of step)
+
+This is some intro text.
+
+. This list item is for all platforms
+
+[.platform:azure]#. This start is for Azure#
+[.platform:aws]#. This start is for AWS#
++
+The list continues here
+
+This is text after the conditional.
