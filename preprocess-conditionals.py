@@ -132,6 +132,7 @@ class AsciiDocIndexer:
 
     # 4a. ifdef/ifndef: expression BEFORE brackets, brackets are empty
     #     Examples: ifdef::azure[]  ifndef::windows[]
+    # NOTE: ifdef/ifndef single-line deliberately ignored, used for the parent-context only for all we know
     _IFDEF_IFNDEF = re.compile(r'''
         ^                    # start of line
         (ifdef|ifndef)       # group 1: directive name
