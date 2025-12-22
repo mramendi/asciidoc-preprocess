@@ -6,7 +6,7 @@ import regexes
 class Parsed:
     """The full parsed text of an Asciidoc module"""
 
-    # Generation of unique IDs for lines. When processing original text, the line id shou;d
+    # Generation of unique IDs for lines. When processing original text, the line id should
     # be the line number. Then there is a large base for ids of additional lines.
     # IMPORTANT: there is NO guarantee of continuous or sequential line IDs
     _next_line_id = 1 # for reference - this is also repeated in __init__
@@ -20,7 +20,7 @@ class Parsed:
 
     def _original_text_processed(self):
         if self._next_line_id > self.ADDED_LINE_START:
-            print(f"WARNING: maximum line id is {_next_line_id-1}, did not jump line ID")
+            print(f"WARNING: maximum line id is {self._next_line_id-1}, did not jump line ID")
         else:
             self._next_line_id = self.ADDED_LINE_START
 
@@ -159,7 +159,23 @@ class Parsed:
 
             block_param = {"delimiter": delimiter, "first_line": first_line}
 
-            result_state_stack = starting_state_stack.settled()
+            result_state_stack = starting_state_stack.duplicate()
+            # if we are in a paragraph, terminate the paragraph, reverting to the state under it
+            if result_state_stack.top().type == StateType.PARAGRAPH:
+                result_state_stack.pop()
+            # if we are in a list item right after a joiner, this is a joined block
+            # in a list in any other place: terminate the list item and any list items under it
+            if result_state_stack.top().type == StateType.LIST_ITEM:
+                if result_state_stack.top().subtype == StateSubtype.JOINED_FIRST_LINE:
+                    list_state = result_state_stack.pop()
+                    list_state.subtype = StateSubtype.JOINED_DELIMITED_BLOCK
+                    result_state_stack.push(list_state)
+                else:
+                    while result_state_stack.top().type == StateType.LIST_ITEM:
+                        result_state_stack.pop()
+                        # Note - this is expected to reach a root or delimited block
+                        # if this reaches an empty state it is an error and the exceptiom is correct
+
             line.state_stack.copy(result_state_stack)
             line.state_stack.push(State(StateType.DELIMITED_BLOCK, StateSubtype.START, block_param))
             subtype = StateSubtype.VERBATIM if regexes.is_delimiter_verbatim(delimiter) else StateSubtype.NORMAL
@@ -176,7 +192,7 @@ class Parsed:
                 return result_state_stack
             if starting_state_stack.top().type == StateType.LIST_ITEM:
                 # blank line terminates a list item, but, in itself, not yet the list
-                # except if the current state is "right after a joining +" it can be ancestor list continuation
+                # except if the current state is "right after a joiner" it can be ancestor list continuation
                 new_state_stack = starting_state_stack.duplicate()
                 list_state = new_state_stack.pop()
                 if list_state.subtype == StateSubtype.JOINED_FIRST_LINE:
@@ -191,6 +207,7 @@ class Parsed:
                         ancestor_list_state.subtype = StateSubtype.JOINED_FIRST_LINE
                         new_state_stack.push(ancestor_list_state)
                         return new_state_stack
+                        
                 list_state.subtype = StateSubtype.TERMINATED
                 new_state_stack.push(list_state)
                 line.state_stack.copy(new_state_stack)
@@ -201,8 +218,12 @@ class Parsed:
             return starting_state_stack
 
         # Continuation marker (+) - only valid in list item context
+        # NOT valid if the list item is terminated
+        # However if there was a delimited block in the list item, a + is valid after it
+        # That is what the JOINED_DELIMITED_BLOCK state is for
         if clean_text == "+":
-            if starting_state_stack.top().type == StateType.LIST_ITEM:
+            if (starting_state_stack.top().type == StateType.LIST_ITEM and 
+                starting_state_stack.top().subtype != StateSubtype.TERMINATED):
                 # Warn if we're already in a joined state
                 if starting_state_stack.top().subtype == StateSubtype.JOINED_FIRST_LINE:
                     print(f"WARNING: + continuation marker immediately after another + on line {line.id}")
@@ -222,6 +243,8 @@ class Parsed:
                 result_state_stack.push(list_item_state)
                 return result_state_stack
             # If not in list item context, fall through to treat as regular content
+            else:
+                print(f"Warning: single + is not a valid joiner, line {line.id}")
 
         # Block attribute line
         if clean_text.startswith("[") and clean_text.endswith("]"):
@@ -232,6 +255,7 @@ class Parsed:
                 new_state_stack.pop()
             elif new_state_stack.top().type == StateType.LIST_ITEM:
                 # A list item is continued, but if inside a joined paragraph, a new joined paragraph begins
+                # note that an existing JOINED_FIRST_LINE state is continued - handled by the default case below
                 if new_state_stack.top().subtype == StateSubtype.JOINED_NORMAL:
                     list_item_state = new_state_stack.pop()
                     list_item_state.subtype = StateSubtype.JOINED_FIRST_LINE
@@ -245,7 +269,8 @@ class Parsed:
         
 
         # List item start - note these do NOT work in-paragraph
-        if (list_match := regexes.LIST_ITEM.match(clean_text)) and starting_state_stack.top().type != StateType.PARAGRAPH:
+        if ((list_match := regexes.LIST_ITEM.match(clean_text)) and 
+            starting_state_stack.top().type != StateType.PARAGRAPH):
             list_marker = list_match.group(1)  # Extract the actual marker string ("*", "**", ".", etc.)
             existing_list_state_stack_base = None
             existing_list_state = None
@@ -260,6 +285,7 @@ class Parsed:
                         existing_list_state_stack_base = analysis_state_stack
                         existing_list_state = analysis_state
                         break
+                    analysis_state = analysis_state_stack.pop()
             # at this point if an existing list is applicable the correct state for it is in
             # existing_list_state and the lower levels for it in existing_list_state_stack_base
             if existing_list_state_stack_base and existing_list_state:
@@ -271,12 +297,15 @@ class Parsed:
                 result_state_stack = existing_list_state_stack_base # just for clarity - still same object
                 result_state_stack.push(next_line_list_state)
                 return result_state_stack
-            # if we reached this point, we are starting a new list
+            # if we reached this point, we are starting a new list on top of existing state stack
+            # Note: if the existing state is a list item, its subtype is not checked
+            # This doesn't really matter as the list items are ended together
+            # ...except for ancestor list continuation where the subtype is reset anyway 
             new_list_state = State(StateType.LIST_ITEM, StateSubtype.FIRST_LINE,
                                    {"list_start_line": line.id, "marker": list_marker})
             next_line_list_state = new_list_state.duplicate()
             next_line_list_state.subtype = StateSubtype.NORMAL
-            result_state_stack = starting_state_stack.settled()
+            result_state_stack = starting_state_stack.duplicate()
             line.state_stack.copy(result_state_stack)
             line.state_stack.push(new_list_state)
             result_state_stack.push(next_line_list_state)
@@ -291,6 +320,8 @@ class Parsed:
                 return starting_state_stack
             # In a paragraph a like that looks like a block title line is NOT a block title, so no need to process here
             # Inside a list item it works the same way, BUT in a joint list paragraph it marks a new joint paragraph
+            # (if subtype is JOINED_FIRST_LINE it can also be the block title for a delimited block,
+            #   which is processed by keeping JOINED_FIRST_LINE for both this and next line)
             # ...and if the list item is terminated, a block title terminates the list!
             if starting_state_stack.top().type == StateType.LIST_ITEM:
                 if starting_state_stack.top().subtype in [StateSubtype.JOINED_FIRST_LINE, StateSubtype.JOINED_NORMAL]:
@@ -305,11 +336,13 @@ class Parsed:
                     line.state_stack.push(State(StateType.BLOCK_PREFIX,StateSubtype.BLOCK_TITLE))
                     return new_state_stack
                 if starting_state_stack.top().subtype == StateSubtype.TERMINATED:
-                    new_state_stack = starting_state_stack.duplicate()
-                    new_state_stack.pop()
-                    line.state_stack.copy(new_state_stack)
+                    # Terminate the list and all list under it
+                    result_state_stack = starting_state_stack.duplicate()
+                    while result_state_stack.top().type == StateType.LIST_ITEM:
+                        result_state_stack.pop()
+                    line.state_stack.copy(result_state_stack)
                     line.state_stack.push(State(StateType.BLOCK_PREFIX,StateSubtype.BLOCK_TITLE))
-                    return new_state_stack
+                    return result_state_stack
 
         # Section header line - warn if not in root; mark line, pass thru state
         # Is only processed in root, delimited block, and after a terminated list item (terminates list) 
@@ -320,8 +353,10 @@ class Parsed:
             if (starting_state_stack.top().type == StateType.LIST_ITEM and
                 starting_state_stack.top().subtype == StateSubtype.TERMINATED):
                 new_state_stack = starting_state_stack.duplicate()
-                new_state_stack.pop()
-            if starting_state_stack.top().type in [StateType.ROOT, StateType.DELIMITED_BLOCK]:
+                # Terminate the list and all list under it
+                while new_state_stack.top().type == StateType.LIST_ITEM:
+                    new_state_stack.pop()
+            elif starting_state_stack.top().type in [StateType.ROOT, StateType.DELIMITED_BLOCK]:
                 new_state_stack = starting_state_stack.duplicate()
             if new_state_stack:
                 if new_state_stack.top().type == StateType.DELIMITED_BLOCK:
@@ -330,24 +365,38 @@ class Parsed:
                 line.state_stack.push(State(StateType.SECTION_HEADER,StateSubtype.NORMAL))
                 return new_state_stack
 
-        # if we are here, this is just a normal line, not a list item, not an empty line, etc
-        # if we are in a paragraph or list item it just continues the state
-        if starting_state_stack.top().type in [StateType.PARAGRAPH, StateType.LIST_ITEM]:
+        # if we are here, this is just a normal line, not a list item start, not an empty line, etc
+        # If we are in a paragraph the line continues the state
+        if starting_state_stack.top().type == StateType.PARAGRAPH:
             line.state_stack.copy(starting_state_stack)
-
-            # Special case: transition from JOINED_FIRST_LINE to JOINED_NORMAL
-            if (starting_state_stack.top().type == StateType.LIST_ITEM and
-                starting_state_stack.top().subtype == StateSubtype.JOINED_FIRST_LINE):
-                result_state_stack = starting_state_stack.duplicate()
-                list_item_state = result_state_stack.pop()
-                list_item_state.subtype = StateSubtype.JOINED_NORMAL
-                result_state_stack.push(list_item_state)
-                return result_state_stack
-
             return starting_state_stack
 
-        # at this point we are in root or a delimited block, so this line starts a paragraph
+        # If in a list item:
+        #    - in most subtypes continue the same state
+        #    - if JOINED_FIRST_LINE was the starting state, use it but continue with JOINED_NORMAL
+        #    - if terminated or after a joined delimited block, terminate all lists then new paragraph
         result_state_stack = starting_state_stack.duplicate()
+        if starting_state_stack.top().type == StateType.LIST_ITEM:
+            if starting_state_stack.top().subtype in [StateSubtype.JOINED_DELIMITED_BLOCK,
+                                                      StateSubtype.TERMINATED]:
+                # Pop all lists from new_state_stack
+                while result_state_stack.top().type == StateType.LIST_ITEM:
+                    result_state_stack.pop()
+                # note we do NOT return so the process continues to creating a new paragraph
+            else: 
+                line.state_stack.copy(starting_state_stack)
+                # Special case: transition from JOINED_FIRST_LINE to JOINED_NORMAL
+                if (starting_state_stack.top().type == StateType.LIST_ITEM and
+                    starting_state_stack.top().subtype == StateSubtype.JOINED_FIRST_LINE):
+                    list_item_state = result_state_stack.pop()
+                    list_item_state.subtype = StateSubtype.JOINED_NORMAL
+                    result_state_stack.push(list_item_state)
+                    return result_state_stack
+
+                return starting_state_stack
+
+        # at this point we are in root or a delimited block, or we have just terminated a list
+        #  so this line starts a paragraph
         paragraph_state = State(StateType.PARAGRAPH, StateSubtype.FIRST_LINE, {"first_line": line.id})
         next_line_paragraph_state = paragraph_state.duplicate()
         next_line_paragraph_state.subtype = StateSubtype.NORMAL

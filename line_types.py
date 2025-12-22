@@ -34,6 +34,7 @@ class StateSubtype(Enum):
     JOINED_FIRST_LINE = auto()
     JOINED_NORMAL = auto()
     TERMINATED = auto()
+    JOINED_DELIMITED_BLOCK = auto()
 
     # For BLOCK_PREFIX only
     BLOCK_TITLE = auto()
@@ -56,7 +57,8 @@ VALID_SUBTYPES: Dict[StateType, Set[StateSubtype]] = {
         StateSubtype.NORMAL,
         StateSubtype.FIRST_LINE,
         StateSubtype.JOINER, StateSubtype.JOINED_FIRST_LINE,
-        StateSubtype.JOINED_NORMAL, StateSubtype.TERMINATED
+        StateSubtype.JOINED_NORMAL, StateSubtype.TERMINATED,
+        StateSubtype.JOINED_DELIMITED_BLOCK
     },
     StateType.CONDITIONAL: {
         StateSubtype.START, StateSubtype.END
@@ -223,19 +225,19 @@ class StateStack:
     def __repr__(self):
         return f"StateStack({self._stack})"
     
-    def settled(self) -> StateStack:
-        """Create a copu a state stack "settled" before adding a new level on top,
-           such as a list or delimited block:
-           - If the top level is a paragraph, remove the top level
-           - If the top level is a list item, move to TERMINATED subtype"""
-        result = self.duplicate()
-        if result.top().type == StateType.PARAGRAPH:
-            result.pop()
-        elif result.top().type == StateType.LIST_ITEM:
-            list_state = result.pop()
-            list_state.subtype = StateSubtype.TERMINATED
-            result.push(list_state)
-        return result 
+    # def settled(self) -> StateStack:
+    #     """Create a copu a state stack "settled" before adding a new level on top,
+    #        such as a list or delimited block:
+    #        - If the top level is a paragraph, remove the top level
+    #        - If the top level is a list item, move to TERMINATED subtype"""
+    #     result = self.duplicate()
+    #     if result.top().type == StateType.PARAGRAPH:
+    #         result.pop()
+    #     elif result.top().type == StateType.LIST_ITEM:
+    #         list_state = result.pop()
+    #         list_state.subtype = StateSubtype.TERMINATED
+    #         result.push(list_state)
+    #     return result 
 
 
 
