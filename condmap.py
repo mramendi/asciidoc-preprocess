@@ -233,7 +233,7 @@ class ConditionalsMap:
                                         values = condition_values)
                     self.conditionals.append(cond)
                     self._warn_about_nested(first_line, last_line)
-                    idx = self.parsed.index(last_line)+1
+                    idx = self.parsed.index(end_line)+1
                     continue
                  else:
                     logger.warning(f"Conditional starts mid-paragraph/list item and includes several items, lines {start_line.id}  - unsupported")
@@ -281,7 +281,7 @@ class ConditionalsMap:
                                         values = condition_values)
                     self.conditionals.append(cond)
                     self._warn_about_nested(first_line, last_line)
-                    idx = self.parsed.index(last_line)+1
+                    idx = self.parsed.index(end_line)+1
                     continue
                 # we do have a partial start of list item - work out if there are grouped versions
                 # a group must have strictly no lines in between conditionals
@@ -307,7 +307,7 @@ class ConditionalsMap:
                     values = condition_values)
                 self.conditionals.append(cond)
                 self._warn_about_nested(first_line, last_line)
-                idx = self.parsed.index(last_line)+1
+                idx = self.parsed.index(end_line)+1
                 continue
 
             # At this point we should be at the start of a block/paragraph/list item
@@ -338,7 +338,7 @@ class ConditionalsMap:
                                     values = condition_values)
                 self.conditionals.append(cond)
                 self._warn_about_nested(first_line, last_line)
-                idx = self.parsed.index(last_line)+1
+                idx = self.parsed.index(end_line)+1
                 continue
 
             # the boundary is broken at the end, while we have a clean start at the start
@@ -354,7 +354,7 @@ class ConditionalsMap:
                             values = condition_values)
                         self.conditionals.append(cond)
                         self._warn_about_nested(first_line, last_line)
-                        idx = self.parsed.index(last_line)+1
+                        idx = self.parsed.index(end_line)+1
                         continue       
 
             # if we reach this place, the conditional is not supported

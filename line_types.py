@@ -295,3 +295,11 @@ class Line:
             result.append("  State stack after:")
             result.append(self.state_stack_after.pretty(indent=4))
         return "\n".join(result)
+
+    def prepend(self, prefix: str):
+        """Prepend text to the line content"""
+        self.content = prefix + self.content
+
+    def append(self, suffix: str):
+        """Append text to the line content"""
+        self.content += suffix

@@ -73,9 +73,22 @@ class Parsed:
         index = self.lines.index(target_line)
         self.lines.insert(index + 1, new_line)
 
+    def create_line_before(self, target_line: Line, content: str) -> Line:
+        """Create a new line and insert it before the target line. Returns the created line."""
+        new_line = self.create_line(content)
+        self.insert_before(target_line, new_line)
+        return new_line
+
+    def create_line_after(self, target_line: Line, content: str) -> Line:
+        """Create a new line and insert it after the target line. Returns the created line."""
+        new_line = self.create_line(content)
+        self.insert_after(target_line, new_line)
+        return new_line
+
     def remove(self, line: Line):
         """Remove a line from the document"""
         self.lines.remove(line)
+
 
     def line_by_id(self, line_id: int) -> Line:
         """Find a Line object by its id. Raises KeyError if not found."""
@@ -83,6 +96,11 @@ class Parsed:
             if line.id == line_id:
                 return line
         raise KeyError(f"No line with id {line_id} found in document")
+
+    def remove_by_id(self, line_id: int):
+        """Remove a line from the document by line ID"""
+        self.lines.remove(self.line_by_id(line_id))
+
 
     def previous_line(self, line: Line) -> Optional[Line]:
         """Get the previous line in the document. Returns None if this is the first line.
@@ -196,6 +214,10 @@ class Parsed:
                 line.state_stack.copy(starting_state_stack)
                 line.state_stack.pop_until_delimited_block(inclusive = False)
                 delim_state = line.state_stack.pop()
+                # set the block_end_line paraneter on the start line state
+                block_start_line = self.line_by_id(delim_state.get("block_start_line"))
+                block_start_line.state_stack.top().parameters["block_end_line"] = line.id
+
                 result_state_stack = line.state_stack.duplicate()
                 delim_state.subtype = StateSubtype.END
                 line.state_stack.push(delim_state)
@@ -232,7 +254,7 @@ class Parsed:
 #                first_line = potential_prefix_line.id
 #                potential_prefix_line = self.previous_line(potential_prefix_line)
 
-            block_param = {"delimiter": delimiter, "first_line": first_line}
+            block_param = {"delimiter": delimiter, "block_start_line": first_line}
 
             result_state_stack = starting_state_stack.duplicate()
             # if we are in a paragraph, terminate the paragraph, reverting to the state under it
@@ -474,9 +496,6 @@ class Parsed:
             
             else: 
                 line.state_stack.copy(starting_state_stack)
-                # Special case: transition from JOINED_FIRST_LINE to JOINED_NORMAL, mark first line number
-                if 
-
                 return starting_state_stack
 
         # at this point we are in root or a delimited block, or we have just terminated a list
