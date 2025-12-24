@@ -1,6 +1,9 @@
 from line_types import Line, State, StateType, StateSubtype, StateStack
 from typing import Optional, List
+import logging
 import regexes
+
+logger = logging.getLogger(__name__)
 
 
 class Parsed:
@@ -8,9 +11,12 @@ class Parsed:
 
     # Generation of unique IDs for lines. When processing original text, the line id should
     # be the line number. Then there is a large base for ids of additional lines.
-    # IMPORTANT: there is NO guarantee of continuous or sequential line IDs
+    # IMPORTANT: there is NO guarantee of continuous or sequential line IDs in total
+    # however the original lines can be acesed by original IDs - but handle skips gracefully (intercept KeyError)
     _next_line_id = 1 # for reference - this is also repeated in __init__
     ADDED_LINE_START = 10000
+    last_original_id = -1
+    _updating_last_original_id = True
 
     def _new_line_id(self) -> int:
         """Get next line ID and increment counter"""
@@ -19,8 +25,9 @@ class Parsed:
         return line_id
 
     def _original_text_processed(self):
+        self._updating_last_original_id = False
         if self._next_line_id > self.ADDED_LINE_START:
-            print(f"WARNING: maximum line id is {self._next_line_id-1}, did not jump line ID")
+            logger.warning(f"maximum line id is {self._next_line_id-1}, did not jump line ID")
         else:
             self._next_line_id = self.ADDED_LINE_START
 
@@ -101,6 +108,17 @@ class Parsed:
             return None
         return self.lines[index + 1]
 
+    def pretty(self) -> str:
+        """Return a readable representation of the parsed document for debugging"""
+        result = []
+        result.append("=" * 80)
+        result.append("PARSED DOCUMENT")
+        result.append("=" * 80)
+        for line in self.lines:
+            result.append(line.pretty())
+        result.append("=" * 80)
+        return "\n".join(result)
+
 
     # PARSING - the core logic
 
@@ -120,18 +138,61 @@ class Parsed:
         clean_text = content.rstrip()
         line = self.create_line(clean_text)
         self.lines.append(line)
+        if self._updating_last_original_id:
+            self.last_original_id = line.id
 
-        # first check if this is a conditional - we mostly ignore those for now
+        # first check if this is a conditional
         if (conditional_match := regexes.CONDITIONAL.match(content)):
-            subtype = StateSubtype.END if conditional_match.group(1) == "endif" else StateSubtype.START
-            line.state_stack.push(State(StateType.CONDITIONAL, subtype))
+            operator = conditional_match.group(1)  # ifdef, ifndef, endif, ifeval
+            expression_before = conditional_match.group(2)  # before []
+            expression_inside = conditional_match.group(3)  # inside []
+
+            # Determine subtype and params
+            params = {}
+            if operator == "endif":
+                subtype = StateSubtype.END
+                # Walk backwards to find matching START
+                logger.debug("Walking back...")
+                for i in range(len(self.lines) - 2, -1, -1):
+                    prev_line = self.lines[i]
+                    logger.debug(f"Checking line: {prev_line.content}")
+                    if (prev_line.state_stack.top().type == StateType.CONDITIONAL and
+                        prev_line.state_stack.top().subtype == StateSubtype.START and
+                        prev_line.state_stack.top().get("end_line") == -1):
+                        # Found the matching start
+                        prev_line.state_stack.top()["end_line"] = line.id
+                        params["start_line"] = prev_line.id
+                        break
+                else:
+                    # No matching start found
+                    logger.warning(f"endif without matching ifdef/ifndef/ifeval on line {line.id}")
+            elif operator in ["ifdef", "ifndef"] and expression_before.strip() and expression_inside.strip():
+                # Single-line conditional: has content both before and inside []
+                subtype = StateSubtype.SINGLE_LINE
+                params["operator"] = operator
+            else:
+                # START
+                subtype = StateSubtype.START
+                # Extract the meaningful expression
+                if operator in ["ifdef", "ifndef"]:
+                    expression = expression_before
+                else:  # ifeval
+                    expression = expression_inside
+                params = {
+                    "expression": expression,
+                    "operator": operator,
+                    "end_line": -1
+                }
+
+            line.state_stack.copy(starting_state_stack)
+            line.state_stack.push(State(StateType.CONDITIONAL, subtype, params))
             return starting_state_stack
 
 
         # check for closing of the top delimited block, if available
         if (delimiter := starting_state_stack.top_delimiter()):
             if clean_text == delimiter:
-                # The sate of the line is the end deimiter in that delimited block
+                # The state of the line is the end delimiter in that delimited block
                 line.state_stack.copy(starting_state_stack)
                 line.state_stack.pop_until_delimited_block(inclusive = False)
                 delim_state = line.state_stack.pop()
@@ -144,6 +205,20 @@ class Parsed:
         if starting_state_stack.top().subtype == StateSubtype.VERBATIM:
             line.state_stack.copy(starting_state_stack)
             return starting_state_stack
+        
+        # process a line comment
+        if clean_text.startswith("//") and (len(clean_text)<=4 or
+                                            clean_text[2:4]!="//"):
+            line.state_stack.copy(starting_state_stack)
+            line.state_stack.push(State(StateType.LINE_COMMENT, StateSubtype.NORMAL))
+            return starting_state_stack
+        
+        # process an attribute definition
+        if regexes.ATTRIBUTE_DEFINITION.match(clean_text):
+            line.state_stack.copy(starting_state_stack)
+            line.state_stack.push(State(StateType.ATTRIBUTE_DEFINITION, StateSubtype.NORMAL))
+            return starting_state_stack
+
 
         # Process a delimiter starting a new block
         if (delimiter := regexes.is_delimiter(clean_text)):
@@ -226,7 +301,7 @@ class Parsed:
                 starting_state_stack.top().subtype != StateSubtype.TERMINATED):
                 # Warn if we're already in a joined state
                 if starting_state_stack.top().subtype == StateSubtype.JOINED_FIRST_LINE:
-                    print(f"WARNING: + continuation marker immediately after another + on line {line.id}")
+                    logger.warning(f"+ continuation marker immediately after another + on line {line.id}")
 
                 # The + line gets marked with JOINER subtype
                 result_state_stack = starting_state_stack.duplicate()
@@ -244,7 +319,7 @@ class Parsed:
                 return result_state_stack
             # If not in list item context, fall through to treat as regular content
             else:
-                print(f"Warning: single + is not a valid joiner, line {line.id}")
+                logger.warning(f"single + is not a valid joiner, line {line.id}")
 
         # Block attribute line
         if clean_text.startswith("[") and clean_text.endswith("]"):
@@ -256,6 +331,7 @@ class Parsed:
             elif new_state_stack.top().type == StateType.LIST_ITEM:
                 # A list item is continued, but if inside a joined paragraph, a new joined paragraph begins
                 # note that an existing JOINED_FIRST_LINE state is continued - handled by the default case below
+                # TODO: investigate what happens right after a joined delim block
                 if new_state_stack.top().subtype == StateSubtype.JOINED_NORMAL:
                     list_item_state = new_state_stack.pop()
                     list_item_state.subtype = StateSubtype.JOINED_FIRST_LINE
@@ -290,6 +366,7 @@ class Parsed:
             # existing_list_state and the lower levels for it in existing_list_state_stack_base
             if existing_list_state_stack_base and existing_list_state:
                 existing_list_state.subtype = StateSubtype.FIRST_LINE
+                existing_list_state.parameters["item_start_line"] = line.id
                 next_line_list_state = existing_list_state.duplicate()
                 next_line_list_state.subtype = StateSubtype.NORMAL
                 line.state_stack.copy(existing_list_state_stack_base)
@@ -302,7 +379,7 @@ class Parsed:
             # This doesn't really matter as the list items are ended together
             # ...except for ancestor list continuation where the subtype is reset anyway 
             new_list_state = State(StateType.LIST_ITEM, StateSubtype.FIRST_LINE,
-                                   {"list_start_line": line.id, "marker": list_marker})
+                                   {"list_start_line": line.id, "item_start_line": line.id, "marker": list_marker})
             next_line_list_state = new_list_state.duplicate()
             next_line_list_state.subtype = StateSubtype.NORMAL
             result_state_stack = starting_state_stack.duplicate()
@@ -323,6 +400,7 @@ class Parsed:
             # (if subtype is JOINED_FIRST_LINE it can also be the block title for a delimited block,
             #   which is processed by keeping JOINED_FIRST_LINE for both this and next line)
             # ...and if the list item is terminated, a block title terminates the list!
+            # TODO: investigate what happens right after a joined delim block
             if starting_state_stack.top().type == StateType.LIST_ITEM:
                 if starting_state_stack.top().subtype in [StateSubtype.JOINED_FIRST_LINE, StateSubtype.JOINED_NORMAL]:
                     new_state_stack = starting_state_stack.duplicate()
@@ -345,13 +423,13 @@ class Parsed:
                     return result_state_stack
 
         # Section header line - warn if not in root; mark line, pass thru state
-        # Is only processed in root, delimited block, and after a terminated list item (terminates list) 
+        # Is only processed in root, delimited block, and after a terminated list item/after delim block (terminates list) 
         # can't condition header lines but this comes later
         # We use new_state_stack as the flag - if it's assigned the header line is actually a header line
         if regexes.SECTION_HEADER.match(clean_text):
             new_state_stack = None
             if (starting_state_stack.top().type == StateType.LIST_ITEM and
-                starting_state_stack.top().subtype == StateSubtype.TERMINATED):
+                starting_state_stack.top().subtype in [StateSubtype.TERMINATED, StateSubtype.JOINED_DELIMITED_BLOCK] ):
                 new_state_stack = starting_state_stack.duplicate()
                 # Terminate the list and all list under it
                 while new_state_stack.top().type == StateType.LIST_ITEM:
@@ -360,7 +438,7 @@ class Parsed:
                 new_state_stack = starting_state_stack.duplicate()
             if new_state_stack:
                 if new_state_stack.top().type == StateType.DELIMITED_BLOCK:
-                    print(f"WARNING: Section title inside delimited block on line {line.id}")
+                    logger.warning(f"Section title inside delimited block on line {line.id}")
                 line.state_stack.copy(new_state_stack)
                 line.state_stack.push(State(StateType.SECTION_HEADER,StateSubtype.NORMAL))
                 return new_state_stack
@@ -373,7 +451,7 @@ class Parsed:
 
         # If in a list item:
         #    - in most subtypes continue the same state
-        #    - if JOINED_FIRST_LINE was the starting state, use it but continue with JOINED_NORMAL
+        #    - if JOINED_FIRST_LINE was the starting state, use it, mark first line id, continue with JOINED_NORMAL
         #    - if terminated or after a joined delimited block, terminate all lists then new paragraph
         result_state_stack = starting_state_stack.duplicate()
         if starting_state_stack.top().type == StateType.LIST_ITEM:
@@ -383,15 +461,21 @@ class Parsed:
                 while result_state_stack.top().type == StateType.LIST_ITEM:
                     result_state_stack.pop()
                 # note we do NOT return so the process continues to creating a new paragraph
-            else: 
-                line.state_stack.copy(starting_state_stack)
-                # Special case: transition from JOINED_FIRST_LINE to JOINED_NORMAL
-                if (starting_state_stack.top().type == StateType.LIST_ITEM and
+            elif (starting_state_stack.top().type == StateType.LIST_ITEM and
                     starting_state_stack.top().subtype == StateSubtype.JOINED_FIRST_LINE):
                     list_item_state = result_state_stack.pop()
-                    list_item_state.subtype = StateSubtype.JOINED_NORMAL
-                    result_state_stack.push(list_item_state)
+                    list_item_state.parameters["joined_start_line"] = line.id
+                    next_line_list_item_state = list_item_state.duplicate()
+                    next_line_list_item_state.subtype = StateSubtype.JOINED_NORMAL
+                    line.state_stack.copy(result_state_stack)
+                    line.state_stack.push(line_item_state)
+                    result_state_stack.push(next_line_list_item_state)
                     return result_state_stack
+            
+            else: 
+                line.state_stack.copy(starting_state_stack)
+                # Special case: transition from JOINED_FIRST_LINE to JOINED_NORMAL, mark first line number
+                if 
 
                 return starting_state_stack
 
@@ -406,12 +490,18 @@ class Parsed:
         return result_state_stack
     
     def __init__(self, lines: List[str]):
+        self.last_original_id = -1
+        self._updating_last_original_id = True
+
         self._next_line_id = 1
         self.lines = []
         running_state_stack = StateStack()
         running_state_stack.push(State(StateType.ROOT, StateSubtype.NORMAL))
         for line in lines:
+            logger.debug(f"Starting state stack: {running_state_stack.pretty()}")
+            logger.debug(f"Line: {line.rstrip()}")
             running_state_stack = self._parse_line(line, running_state_stack)
+            logger.debug(f"Last line state stack: {self.lines[-1].state_stack.pretty()}")
         self._original_text_processed()
 
         # Validation: ensure no line has an empty state stack (logic error if so)

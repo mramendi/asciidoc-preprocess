@@ -12,6 +12,8 @@ class StateType(Enum):
     CONDITIONAL = auto()
     BLOCK_PREFIX = auto()
     SECTION_HEADER = auto()
+    LINE_COMMENT = auto()
+    ATTRIBUTE_DEFINITION = auto()
 
 
 class StateSubtype(Enum):
@@ -19,6 +21,9 @@ class StateSubtype(Enum):
     # For CONDITIONAL and DELIMITED_BLOCK
     START = auto()
     END = auto()
+
+    # For CONDITIONAL only
+    SINGLE_LINE = auto()
 
     # For DELIMITED_BLOCK only
     VERBATIM = auto()
@@ -61,7 +66,7 @@ VALID_SUBTYPES: Dict[StateType, Set[StateSubtype]] = {
         StateSubtype.JOINED_DELIMITED_BLOCK
     },
     StateType.CONDITIONAL: {
-        StateSubtype.START, StateSubtype.END
+        StateSubtype.START, StateSubtype.END, StateSubtype.SINGLE_LINE
     },
     StateType.ROOT: {
         StateSubtype.NORMAL
@@ -71,6 +76,12 @@ VALID_SUBTYPES: Dict[StateType, Set[StateSubtype]] = {
         StateSubtype.BLOCK_TITLE
     },
     StateType.SECTION_HEADER: {
+        StateSubtype.NORMAL
+    },
+    StateType.LINE_COMMENT: {
+        StateSubtype.NORMAL
+    },
+    StateType.ATTRIBUTE_DEFINITION: {
         StateSubtype.NORMAL
     },
 }
@@ -204,6 +215,14 @@ class StateStack:
         new_stack._stack = copy.deepcopy(self._stack)
         return new_stack
 
+    def until_delim_or_root(self):
+        """Return a copy with all all items until root or a delimited block discarded; 
+           the root/delimited block itself remains"""
+        result = self.duplicate()
+        while not result.top().type in [StateType.ROOT, StateType.DELIMITED_BLOCK]:
+            result.pop()
+        return result
+
     def top(self) -> State:
         """Get the top state without removing it"""
         if self._stack:
@@ -225,19 +244,30 @@ class StateStack:
     def __repr__(self):
         return f"StateStack({self._stack})"
     
-    # def settled(self) -> StateStack:
-    #     """Create a copu a state stack "settled" before adding a new level on top,
-    #        such as a list or delimited block:
-    #        - If the top level is a paragraph, remove the top level
-    #        - If the top level is a list item, move to TERMINATED subtype"""
-    #     result = self.duplicate()
-    #     if result.top().type == StateType.PARAGRAPH:
-    #         result.pop()
-    #     elif result.top().type == StateType.LIST_ITEM:
-    #         list_state = result.pop()
-    #         list_state.subtype = StateSubtype.TERMINATED
-    #         result.push(list_state)
-    #     return result 
+    def __eq__(self, other):
+        if not isinstance(other, StateStack):
+              return False
+        return self._stack == other._stack
+
+    def pretty(self, indent: int = 0) -> str:
+        """Return a pretty-printed representation of the state stack (top to bottom)"""
+        if not self._stack:
+            return " " * indent + "(empty stack)"
+
+        lines = []
+        # Display from top to bottom (reversed list order)
+        for i in range(len(self._stack) - 1, -1, -1):
+            state = self._stack[i]
+            prefix = " " * indent + f"[{i}] "
+            state_str = f"{state.type.name}/{state.subtype.name}"
+            if state.parameters:
+                state_str += f" {state.parameters}"
+            lines.append(prefix + state_str)
+        return "\n".join(lines)
+    
+
+
+
 
 
 
@@ -254,3 +284,14 @@ class Line:
     def id(self) -> int:
         """Immutable line identifier"""
         return self._id
+
+    def pretty(self) -> str:
+        """Return a pretty-printed representation of this line"""
+        result = []
+        result.append(f"\nLine {self.id}: {repr(self.content)}")
+        result.append("  State stack:")
+        result.append(self.state_stack.pretty(indent=4))
+        if len(self.state_stack_after) > 0:
+            result.append("  State stack after:")
+            result.append(self.state_stack_after.pretty(indent=4))
+        return "\n".join(result)

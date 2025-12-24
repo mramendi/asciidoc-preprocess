@@ -154,7 +154,39 @@ LIST_ITEM = re.compile(r'''
   - .. Nested → ordered level 2                                                                                                                                                                                                                                                          
   - *  → unordered with empty content                                                                                                                                                                                                                                                    
                                                                                                                                                                                                                                                                                          
-  Does NOT match:                                                                                                                                                                                                                                                                        
-  - *NoSpace (missing required space)                                                                                                                                                                                                                                                    
-  -  * Item (leading whitespace - not plain)                                                                                                                                                                                                                                             
+  Does NOT match:
+  - *NoSpace (missing required space)
+  -  * Item (leading whitespace - not plain)
   - - Item (dash marker - not supported)     """
+
+ATTRIBUTE_DEFINITION = re.compile(r'''
+    ^                # start of line
+    :                # opening colon
+    (!)?             # group 1: optional ! for unsetting
+    ([a-zA-Z0-9_-]+) # group 2: attribute name (alphanumeric, hyphens, underscores)
+    :                # closing colon
+    (.*)             # group 3: attribute value (possibly empty)
+    $                # end of line
+''', re.VERBOSE)
+
+"""   Usage:
+  m = ATTRIBUTE_DEFINITION.match(line)
+  if m:
+      unset_flag = m.group(1)    # '!' or None
+      attr_name = m.group(2)     # 'attr-name'
+      attr_value = m.group(3)    # ' value' or ''
+
+      # Strip leading whitespace from value
+      value = attr_value.lstrip() if attr_value else ''
+
+  Examples that match:
+  - :attr-name: → unset/empty attribute
+  - :attr-name: value → set attribute with value
+  - :!attr-name: → unset attribute (alternative syntax)
+  - :version: 1.0 → attribute 'version' = '1.0'
+  - :toc: left → attribute 'toc' = 'left'
+
+  Does NOT match:
+  - attr-name: value (missing leading colon)
+  - :attr name: value (space in attribute name)
+  - Lines that don't start with :     """
