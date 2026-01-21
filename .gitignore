@@ -1,2 +1,5 @@
 testing/
 __pycache__/
+rx.rb
+*.adoc
+*.pretty

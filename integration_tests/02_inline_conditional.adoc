@@ -1,7 +1,0 @@
-= Inline Conditional Test
-
-This is a paragraph with
-ifdef::aws[]
-some AWS-specific text
-endif::[]
-in the middle of it.
