@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class ConditionalType(Enum):
     """ types of conditionals 
         note absence of INVALID - invalid conditionals are just not processed"""
-    PARTIAL = auto() # any part of one paragraph or part of a list item that dies NOT start with a first line
+    PARTIAL = auto() # any part of one paragraph or part of a list item that does NOT start with a first line
     PART_START_LIST_ITEM = auto() # a part of a list item that starts with a first line
     SINGLE_LIST_ITEM = auto() # exactly one list item, nothing joined
     GROUP_START_LIST_ITEM = auto() # one of several list item starts with common continuation

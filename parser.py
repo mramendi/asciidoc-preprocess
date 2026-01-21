@@ -490,7 +490,7 @@ class Parsed:
                     next_line_list_item_state = list_item_state.duplicate()
                     next_line_list_item_state.subtype = StateSubtype.JOINED_NORMAL
                     line.state_stack.copy(result_state_stack)
-                    line.state_stack.push(line_item_state)
+                    line.state_stack.push(list_item_state)
                     result_state_stack.push(next_line_list_item_state)
                     return result_state_stack
             

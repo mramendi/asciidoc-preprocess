@@ -1,8 +1,0 @@
-= List Items Test
-
-Here is a list with conditional items:
-
-. [.product:rhel]#{empty}# First RHEL-specific item
-. [.product:rhel]#{empty}# Second RHEL-specific item
-
-Regular text after.

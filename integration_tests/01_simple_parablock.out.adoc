@@ -1,9 +1,0 @@
-= Simple Parablock Test
-
-This is some intro text.
-
-[role="platform:azure"]
-This paragraph is Azure-specific.
-It has multiple lines.
-
-This is text after the conditional.
