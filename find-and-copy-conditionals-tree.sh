@@ -16,6 +16,9 @@ if [ ! -d "$SOURCE_DIR" ]; then
     exit 1
 fi
 
+# Convert SOURCE_DIR to absolute path for proper path stripping
+SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
+
 # Validate master list if provided
 if [ -n "$MASTER_LIST" ] && [ ! -f "$MASTER_LIST" ]; then
     echo "Error: Master list file '$MASTER_LIST' does not exist"
