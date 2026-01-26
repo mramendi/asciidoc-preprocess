@@ -242,10 +242,17 @@ def remove_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
 def main():
     parser = argparse.ArgumentParser(description="Preprocess AsciiDoc files to handle conditional directives")
     parser.add_argument("input_file", help="Input AsciiDoc file")
-    parser.add_argument("output_file", help="Output file")
+    parser.add_argument("output_file",
+                       default=sys.stdout,
+                       nargs='?',
+                       help="Output file")
     parser.add_argument("--list",
                        default="conditionals.lst",
                        help="List file containing conditional values (default: conditionals.lst)")
+    parser.add_argument('-i', '--in-place',
+                       default=False,
+                       action='store_true',
+                       help="Overwrite the original file instead of writing to a new one or to stdout")
     parser.add_argument("--debug-output",
                        help="Debug output file for pretty-printed parse and conditional info")
     parser.add_argument("--log-level",
@@ -262,7 +269,7 @@ def main():
     )
 
     input_file = args.input_file
-    output_file = args.output_file
+    output_file = args.output_file if not args.in_place else args.input_file
     list_file = args.list
 
     # Read list file and create values set
@@ -313,16 +320,22 @@ def main():
 
     # Write the processed output file (just line contents)
     try:
-        with open(output_file, 'w', encoding='utf-8') as f:
+        if output_file == sys.stdout:
             for line in parsed.lines:
-                f.write(line.content)
-                f.write("\n")
+                output_file.write(line.content)
+                output_file.write("\n")
+        else:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                for line in parsed.lines:
+                    f.write(line.content)
+                    f.write("\n")
     except IOError as e:
         print(f"Error writing output file: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-    print(f"Successfully processed {input_file} -> {output_file}")
+    # Format the message and report the result:
+    print(f"Successfully processed {input_file} -> {'STDOUT' if output_file == sys.stdout else output_file}", file=sys.stderr)
 
 
 if __name__ == "__main__":
