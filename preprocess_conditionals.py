@@ -19,7 +19,7 @@ def dotroles(values: Set[str]) -> str:
     return ' '.join(["."+ATTRIBUTE+":"+x for x in values])
 
 def attroles(values: Set[str]) -> str:
-    return 'role="'+' '.join(["."+ATTRIBUTE+":"+x for x in values])+'"'
+    return 'role="'+' '.join([ATTRIBUTE+":"+x for x in values])+'"'
 
 
 
