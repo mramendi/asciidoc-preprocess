@@ -153,7 +153,7 @@ class Parsed:
                  raise ValueError(f"Invalid top state passed to parse_line: {top_starting_state}")
                   
         # create the Line object and add it to the lines list
-        clean_text = content.rstrip()
+        clean_text = content.replace("\n","")
         line = self.create_line(clean_text)
         self.lines.append(line)
         if self._updating_last_original_id:
