@@ -24,6 +24,23 @@ def attroles(values: Set[str]) -> str:
 
 
 def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
+
+    def is_in_list(state_stack: StateStack, list_start_line: int, except_first_line: bool = False):
+        """Determine if a state stack includes the list with the given start line ID at any level.
+           With except_first_line, if it does but the subtype is FIRST_LINE, refurn False 
+        """
+        processing_state_stack = state_stack.duplicate() # do not change the original stack
+        while len(processing_state_stack) > 0:
+            processing_state = processing_state_stack.pop()
+            if ((processing_state.type == StateType.LIST_ITEM) and
+                (processing_state.get("list_start_line") == list_start_line)):
+                if except_first_line and (processing_state.subtype == StateSubtype.FIRST_LINE):
+                    return False 
+                else:
+                    return True
+        return False
+
+
     idx = 0
     while idx < len(cond_map.conditionals):
         cond = cond_map.conditionals[idx]
@@ -147,15 +164,18 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                     #  - but only if this is also the list start line
                     # In this case we jump over the list. So if we reach a list item where this is not the
                     #  list start line, we just conditionalize the item
-                    # The logic is we check for whole-list first, and if we conditionalize it we jump oveer it and continue
+                    # The logic is we check for whole-list first, and if we conditionalize it we jump over it and continue
                     # If we don't continue the loop we fall through to conditonalizing the item
                     if current_line_top_state.get("list_start_line") == current_line.id:
                         logger.debug(f"      This is the list start line - checking if entire list is conditioned")
                         # walk the lines of the list until they are either no longer in the list or we hit the endif
-                        # if we encounter a delimited block in the list we jump over it - the endif should be after it,
-                        #  because we checked delimited block state
+                        # to see if the line is "in the list" we just need to see if LIST_ITEM with this same start line is 
+                        # somewhere in its stack
+                        # we also need to ignore lines that are non-consequential (conditionals, attribute definitions, comments) 
+
                         complete_list = False
                         line_after_list = None
+
                         walking_line = parsed.next_line(current_line)
                         if not walking_line:
                             raise RuntimeError(f"While processing conditional from line {cond.start_id} we hit EOF - this should not happen")
@@ -163,37 +183,53 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                             if not walking_line:
                                 raise RuntimeError(f"While processing conditional from line {cond.start_id} we hit EOF - this should not happen")
                             logger.debug(f"Walking line {walking_line.id}")
-                            if ((walking_line.state_stack.top().type == StateType.LIST_ITEM) and
-                                (walking_line.state_stack.top().get("list_start_line") == current_line.id)):
-                                # we are still in the list, next line, continue
-                                walking_line = parsed.next_line(walking_line)
-                                continue
-                            if walking_line.state_stack.top().type == StateType.DELIMITED_BLOCK:
-                                analysis_state_stack = walking_line.state_stack.duplicate()
-                                analysis_state_stack.pop() # see what is under the delimited block
-                                if ((analysis_state_stack.top().type == StateType.LIST_ITEM) and
-                                (analysis_state_stack.top().get("list_start_line") == current_line.id)):
-                                    # the block is inside the list, jump over the block, continue
-                                    block_end_line_id = walking_line.state_stack.top().get("block_end_line")
-                                    if not block_end_line_id:
-                                        logger.warning(f"Block end not found from line {walking_line.id}, results can be unpredictable")
-                                        # loop to next line, though at this stage things are very likely to break
-                                        walking_line = parsed.next_line(walking_line)
-                                        continue
-                                    else:
-                                        block_end_line = parsed.line_by_id(block_end_line_id)
-                                        walking_line = parsed.next_line(block_end_line)
-                                        continue # continue the loop as we jumped over the block and were still in the list
                             if walking_line.state_stack.top().type in [StateType.CONDITIONAL,
                                                                        StateType.ATTRIBUTE_DEFINITION,
                                                                        StateType.LINE_COMMENT]:
                                 # skip nontext lines
                                 walking_line = parsed.next_line(walking_line)
                                 continue
+
+                            if is_in_list(walking_line.state_stack, current_line.id, False):
+                                walking_line = parsed.next_line(walking_line)
+                                continue
+
                             # if we fall through here, we reached a line not in the list before reaching endif
                             complete_list = True
                             line_after_list = walking_line
-                            break 
+                            break
+
+                        # If we exited by hitting endif, check what comes after to determine completeness
+                        if not complete_list:
+                            logger.debug(f"      Reached endif without finding post-list content - checking after endif")
+                            check_line = parsed.next_line(parsed.line_by_id(cond.end_id))
+
+                            # Skip blank lines and non-text lines
+                            while check_line:
+                                if (check_line.content.strip() == "" or
+                                    check_line.state_stack.top().type in [StateType.CONDITIONAL,
+                                                                          StateType.ATTRIBUTE_DEFINITION,
+                                                                          StateType.LINE_COMMENT]):
+                                    check_line = parsed.next_line(check_line)
+                                    continue
+
+                                # Found first content line after endif
+                                if is_in_list(check_line.state_stack, current_line.id, False):
+                                    logger.debug(f"        List continues at line {check_line.id} - not complete")
+                                    complete_list = False
+                                else:
+                                    # Different content - complete list
+                                    logger.debug(f"        Line {check_line.id} not part of list - complete")
+                                    complete_list = True
+                                    # Set the line_after_list to the endif line
+                                    line_after_list = parsed.line_by_id(cond.end_id)
+                                break
+                            else:
+                                # While loop exited normally (check_line became None = EOF)
+                                logger.debug(f"        EOF after endif - complete list")
+                                complete_list = True
+                                # Set the line_after_list to the endif line
+                                line_after_list = parsed.line_by_id(cond.end_id)
 
                         if complete_list:
                             logger.debug(f"      Entire list is conditioned - creating block attributes and jumping over list")
@@ -205,13 +241,32 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                             continue
                         else:
                             logger.debug(f"      List extends beyond conditional - will conditionalize just this item")
-                    # if we reached this point we need to add the slug to conditionalize the list item
+                    # if we reached this point we need to add the slug to conditionalize the list item -
+                    #  and then skip everything inside this list item to reach the next list item or something else (or endif)
                     logger.debug(f"      Adding inline role to individual list item")
                     marker = current_line.state_stack.top().get("marker")
                     if not marker:
                         raise RuntimeError(f"Line classified as LIST_ITEM but no marker found in state, line {current_line.id}")
                     content_after_marker = current_line.content[len(marker)+1:] # remove marker and space after it
                     current_line.content = marker+" ["+dotroles(cond.values)+"]#{empty}# "+content_after_marker
+                    logger.debug(f"      Walking the contents of the list item")
+                    list_start_line = current_line.state_stack.top().get("list_start_line")
+                    line_after_list_item = parsed.next_line(current_line)
+                    while (line_after_list_item and (line_after_list_item.id != cond.end_id) and 
+                           is_in_list(line_after_list_item.state_stack,list_start_line,True)):  
+                            # this call will return False if the line is not in list or is the start of a new item
+                        logger.debug(f"        Walked like {line_after_list_item.id}")
+                        line_after_list_item = parsed.next_line(line_after_list_item)
+                    
+                    if not line_after_list_item:
+                        raise RuntimeError(f"While processing conditional from line {cond.start_id} we hit EOF - this should not happen")
+                    current_line = line_after_list_item
+                    continue
+
+                    
+                    
+
+
                 elif current_line_top_state.type == StateType.SECTION_HEADER:
                     logger.debug(f"    Line {current_line.id}: SECTION_HEADER - creating block attributes (uncertain result)")
                     # we already warned the user this might get unpredictable
