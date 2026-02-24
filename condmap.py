@@ -67,7 +67,7 @@ class ConditionalsMap:
 
 
     def _make_map(self):
-        idx = 1
+        idx = 0
         end_ids_unsupported = []
         while idx < len(self.parsed.lines):
             start_line: Line = self.parsed.lines[idx]
