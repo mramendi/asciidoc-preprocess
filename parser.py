@@ -445,10 +445,12 @@ class Parsed:
                     return result_state_stack
 
         # Section header line - warn if not in root; mark line, pass thru state
-        # Is only processed in root, delimited block, and after a terminated list item/after delim block (terminates list) 
+        # Is only processed in root, delimited block, and after a terminated list item/after delim block (terminates list)
         # can't condition header lines but this comes later
         # We use new_state_stack as the flag - if it's assigned the header line is actually a header line
-        if regexes.SECTION_HEADER.match(clean_text):
+        if (header_match := regexes.SECTION_HEADER.match(clean_text)):
+            level = len(header_match.group(1))  # Count the = signs to get level
+
             new_state_stack = None
             if (starting_state_stack.top().type == StateType.LIST_ITEM and
                 starting_state_stack.top().subtype in [StateSubtype.TERMINATED, StateSubtype.JOINED_DELIMITED_BLOCK] ):
@@ -461,8 +463,39 @@ class Parsed:
             if new_state_stack:
                 if new_state_stack.top().type == StateType.DELIMITED_BLOCK:
                     logger.warning(f"Section title inside delimited block on line {line.id}")
+
+                # Walk backwards to find section end boundary and close previous sections
+                # First, find the first non-blank, non-comment, non-attribute-block, non-conditional line
+                section_end_line_id = None
+                walk_line = self.previous_line(line)
+                while walk_line:
+                    top_state = walk_line.state_stack.top()
+                    if not (walk_line.content.strip() == "" or
+                            top_state.type == StateType.CONDITIONAL or
+                            top_state.type == StateType.LINE_COMMENT or
+                            top_state.type == StateType.ATTRIBUTE_DEFINITION or
+                            (top_state.type == StateType.BLOCK_PREFIX and
+                             top_state.subtype == StateSubtype.BLOCK_ATTRIBUTES)):
+                        # This is the first content line before the section
+                        section_end_line_id = walk_line.id
+                        break
+                    walk_line = self.previous_line(walk_line)
+
+                # Now continue walking back to find previous section headers to close
+                while walk_line:
+                    top_state = walk_line.state_stack.top()
+                    if top_state.type == StateType.SECTION_HEADER:
+                        if top_state.get("end_line") == -1:
+                            # This section is still open
+                            walk_level = top_state.get("level")
+                            if walk_level is not None and walk_level >= level:
+                                # Same or lower level (numerically same or higher) - close it
+                                top_state.parameters["end_line"] = section_end_line_id
+                    walk_line = self.previous_line(walk_line)
+
                 line.state_stack.copy(new_state_stack)
-                line.state_stack.push(State(StateType.SECTION_HEADER,StateSubtype.NORMAL))
+                line.state_stack.push(State(StateType.SECTION_HEADER, StateSubtype.NORMAL,
+                                           {"level": level, "end_line": -1}))
                 return new_state_stack
 
         # if we are here, this is just a normal line, not a list item start, not an empty line, etc
@@ -521,6 +554,29 @@ class Parsed:
             logger.debug(f"Line: {line.rstrip()}")
             running_state_stack = self._parse_line(line, running_state_stack)
             logger.debug(f"Last line state stack: {self.lines[-1].state_stack.pretty()}")
+
+        # Close any remaining open sections by walking backwards from EOF
+        # Find the last non-blank, non-comment, non-attribute-block, non-conditional line
+        last_content_line_id = None
+        for walk_line in reversed(self.lines):
+            top_state = walk_line.state_stack.top()
+            if not (walk_line.content.strip() == "" or
+                    top_state.type == StateType.CONDITIONAL or
+                    top_state.type == StateType.LINE_COMMENT or
+                    top_state.type == StateType.ATTRIBUTE_DEFINITION or
+                    (top_state.type == StateType.BLOCK_PREFIX and
+                     top_state.subtype == StateSubtype.BLOCK_ATTRIBUTES)):
+                last_content_line_id = walk_line.id
+                break
+
+        # Now close all open sections
+        if last_content_line_id is not None:
+            for walk_line in self.lines:
+                top_state = walk_line.state_stack.top()
+                if (top_state.type == StateType.SECTION_HEADER and
+                    top_state.get("end_line") == -1):
+                    top_state.parameters["end_line"] = last_content_line_id
+
         self._original_text_processed()
 
         # Validation: ensure no line has an empty state stack (logic error if so)
