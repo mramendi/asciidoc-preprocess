@@ -43,10 +43,19 @@ FOUR_MORE_DELIM = re.compile(r'''
     $                    # nothing else
 ''', re.VERBOSE)
 
-# Table opener  |===  !=== ,=== :===
-TABLE_DELIM = re.compile(r'''
+# Parseable table formats (PSV and CSV) - we will parse these
+TABLE_PSV_CSV = re.compile(r'''
     ^              # start of line
-    ([|!,:])      # group 1: exactly one of |  !  ,  :
+    ([|,])         # group 1: exactly | or ,
+    ={3,}          # followed by at least three equals signs
+    [ \t]*         # optional trailing whitespace
+    $              # nothing else allowed
+''', re.VERBOSE)
+
+# Other table formats (DSV, TSV, etc.) - treat as verbatim
+TABLE_OTHER = re.compile(r'''
+    ^              # start of line
+    ([!:])         # group 1: exactly ! or :
     ={3,}          # followed by at least three equals signs
     [ \t]*         # optional trailing whitespace
     $              # nothing else allowed
@@ -66,15 +75,34 @@ def is_delimiter(content: str) -> Optional[str]:
     if stripped == "--":
         return stripped
 
+    # Check for parseable table delimiter (PSV/CSV) FIRST
+    if TABLE_PSV_CSV.match(stripped):
+        return stripped
+
     # Check for four-or-more delimiter
     if FOUR_MORE_DELIM.match(stripped):
         return stripped
 
-    # Check for table delimiter
-    if TABLE_DELIM.match(stripped):
+    # Check for other table delimiters (DSV/TSV) - will be verbatim
+    if TABLE_OTHER.match(stripped):
         return stripped
 
     return None
+
+def table_format(delimiter: str) -> Optional[str]:
+    """
+    Determine table format from delimiter.
+    Returns 'psv', 'csv', or None if not a parseable table.
+    """
+    if not delimiter or len(delimiter) < 4:
+        return None
+
+    if delimiter[0] == '|':
+        return 'psv'
+    elif delimiter[0] == ',':
+        return 'csv'
+    else:
+        return None  # DSV/TSV or not a table
 
 def is_delimiter_verbatim(delimiter: str) -> bool:
     """Checks if a delimiter denotes a verbatim block.
@@ -190,3 +218,17 @@ ATTRIBUTE_DEFINITION = re.compile(r'''
   - attr-name: value (missing leading colon)
   - :attr name: value (space in attribute name)
   - Lines that don't start with :     """
+# Cell spec at start of cell content (after delimiter)
+# Format: [colspan][.rowspan][+|*][align][style]|content
+# Examples: |content, 2+|content, 3.2+^a|content, >m|content
+CELL_SPEC_START = re.compile(r'''
+    ^[ \t]*                          # optional leading whitespace
+    (?:
+        (\d+(?:\.\d*)?|\.\d+)        # group 1: colspan (optional decimal)
+        (?:\.(\d+(?:\.\d*)?|\.\d+))? # group 2: rowspan (after dot, optional)
+        ([+*])?                      # group 3: span operator (+ or *)
+    )?
+    ([<^>](?:\.[<^>]?)?|(?:[<^>]?\.)?[<^>])? # group 4: alignment (h.v or h or .v)
+    ([a-z])?                         # group 5: style (d,s,e,m,h,l,a)
+    [ \t]*                           # trailing whitespace before content
+''', re.VERBOSE)

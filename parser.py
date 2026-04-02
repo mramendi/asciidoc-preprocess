@@ -1,6 +1,7 @@
 from line_types import Line, State, StateType, StateSubtype, StateStack
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import logging
+import re
 import regexes
 
 logger = logging.getLogger(__name__)
@@ -540,7 +541,53 @@ class Parsed:
         line.state_stack.push(paragraph_state)
         result_state_stack.push(next_line_paragraph_state)
         return result_state_stack
-    
+
+    def _parse_table_cols_attribute(self, cols_attr: str) -> List[Dict[str, Any]]:
+        """Parse the cols attribute to determine column specifications.
+
+        Format: "3*" or "1,2,3" or "e,m,^,>s"
+
+        Returns: List of column specs with 'style' key ('a' for asciidoc cells)
+        """
+        if not cols_attr:
+            return []
+
+        colspecs = []
+        # Split by comma or semicolon
+        for spec in re.split(r'[,;]', cols_attr):
+            spec = spec.strip()
+            if not spec:
+                continue
+
+            # Handle repeat syntax: "3*" means 3 columns
+            if '*' in spec:
+                match = re.match(r'(\d+)\*(.*)$', spec)
+                if match:
+                    count = int(match.group(1))
+                    rest = match.group(2)
+                    for _ in range(count):
+                        colspecs.append(self._parse_single_colspec(rest))
+                    continue
+
+            colspecs.append(self._parse_single_colspec(spec))
+
+        return colspecs
+
+    def _parse_single_colspec(self, spec: str) -> Dict[str, Any]:
+        """Parse a single column specification.
+
+        Format: [width][align][style]
+        Examples: "a", "e", "m", "^", ">s", "1", "20%"
+        """
+        # Extract style character at the end (a-z)
+        style = None
+        if spec and spec[-1].isalpha():
+            # Check common styles: a, e, s, l, d, m, h
+            if spec[-1] in ['a', 'e', 's', 'l', 'd', 'm', 'h']:
+                style = spec[-1]
+
+        return {'style': style}
+
     def __init__(self, lines: List[str]):
         self.last_original_id = -1
         self._updating_last_original_id = True
