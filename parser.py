@@ -314,18 +314,42 @@ class Parsed:
             tbl_format = regexes.table_format(delimiter)
             if tbl_format:
                 # Parseable table - extract column specs if available
+                # Walk backwards through blank lines, comments, conditionals, block prefixes
                 cols_attr = None
                 colspecs = []
-                prev_line = self.previous_line(line)
-                if (prev_line and
-                    prev_line.state_stack.top().type == StateType.BLOCK_PREFIX and
-                    prev_line.state_stack.top().subtype == StateSubtype.BLOCK_ATTRIBUTES):
-                    # Extract cols attribute from block attributes line
-                    # Format: [cols="...",other="..."]
-                    match = re.search(r'cols="([^"]+)"', prev_line.content)
-                    if match:
-                        cols_attr = match.group(1)
-                        colspecs = self._parse_table_cols_attribute(cols_attr)
+                walk_line = self.previous_line(line)
+                while walk_line:
+                    top_state = walk_line.state_stack.top()
+                    # Skip blank lines and special lines
+                    if (walk_line.content.strip() == "" or
+                        top_state.type == StateType.CONDITIONAL or
+                        top_state.type == StateType.LINE_COMMENT or
+                        top_state.type == StateType.ATTRIBUTE_DEFINITION):
+                        walk_line = self.previous_line(walk_line)
+                        continue
+
+                    # Check for block attributes
+                    if (top_state.type == StateType.BLOCK_PREFIX and
+                        top_state.subtype == StateSubtype.BLOCK_ATTRIBUTES):
+                        # Extract cols attribute from block attributes line
+                        # Format: [cols="...",other="..."]
+                        match = re.search(r'cols="([^"]+)"', walk_line.content)
+                        if match:
+                            cols_attr = match.group(1)
+                            colspecs = self._parse_table_cols_attribute(cols_attr)
+                            break
+                        # Found block attributes but no cols - continue searching
+                        walk_line = self.previous_line(walk_line)
+                        continue
+
+                    # Check for block title - can be between attributes and delimiter
+                    if (top_state.type == StateType.BLOCK_PREFIX and
+                        top_state.subtype == StateSubtype.BLOCK_TITLE):
+                        walk_line = self.previous_line(walk_line)
+                        continue
+
+                    # Hit content line - stop searching
+                    break
 
                 # Create table parameters
                 table_param = {
