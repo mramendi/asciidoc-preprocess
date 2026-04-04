@@ -246,7 +246,26 @@ class Parsed:
                 # Line has column delimiter - parse table structure
                 return self._parse_table_line(line, clean_text, starting_state_stack)
             else:
-                # No column delimiter - check if in 'a' cell
+                # No column delimiter - this could be end of first row for implicit columns
+                # or continuation of a multi-line cell
+
+                # Check if we need to infer column count (first row with implicit columns)
+                colspecs = table_state.get("colspecs", [])
+                current_row = table_state.get("current_row", 0)
+                current_col = table_state.get("current_col", 0)
+                explicit_cols = table_state.get("explicit_cols", False)
+
+                if not explicit_cols and current_row == 0 and current_col > 0:
+                    # First row with implicit columns - infer column count now
+                    inferred_colcount = current_col
+                    table_state.parameters["colspecs"] = [{"style": None} for _ in range(inferred_colcount)]
+                    table_state.parameters["explicit_cols"] = True  # Mark as inferred (now known)
+                    logger.info(f"Inferred {inferred_colcount} columns from first table row at line {line.id}")
+
+                    # Check if there are any conditionals in the table - warn if so
+                    # (Will implement conditional check later if needed)
+
+                # Now continue with normal cell content handling
                 if self._in_asciidoc_table_cell(starting_state_stack):
                     # Let normal parsing handle this line (paragraph, list, conditional, etc.)
                     # Fall through to normal parsing logic
@@ -745,12 +764,30 @@ class Parsed:
 
         if starts_with_delim and not cell_open and not in_quotes:
             # Line starts with delimiter - could be new row OR new column in same row
-            # New row if: we've completed expected column count (or first row)
+            # First, check if we need to infer column count from first row
+            if expected_col_count == -1 and current_row == 0 and current_col > 0:
+                # First row with implicit columns - line starting with | means end of first row
+                # Infer column count now
+                inferred_colcount = current_col
+                colspecs = [{"style": None} for _ in range(inferred_colcount)]
+                table_state.parameters["colspecs"] = colspecs
+                table_state.parameters["explicit_cols"] = True  # Mark as inferred (now known)
+                expected_col_count = inferred_colcount
+                logger.info(f"Inferred {inferred_colcount} columns from first table row at line {line.id}")
+
+            # Now determine if this is a new row or new column
+            # New row if: we've completed expected column count (or very first row)
             # New column if: we haven't reached expected column count yet
 
-            is_new_row = (current_col == 0 or  # First row
-                         (expected_col_count > 0 and current_col >= expected_col_count) or  # Reached expected count
-                         (expected_col_count == -1 and current_row > 0))  # Implicit cols, not first row
+            is_new_row = False
+            if current_col == 0:
+                # Very first row of the table
+                is_new_row = True
+            elif expected_col_count > 0 and current_col >= expected_col_count:
+                # We've reached the expected count (explicit or inferred)
+                is_new_row = True
+            # Note: For implicit columns before inference (expected_col_count == -1),
+            # we continue adding columns to the first row
 
             # Parse cell spec (same for both new row and new column)
             content_after_delim = clean_text.lstrip()[1:]  # Remove leading delimiter
@@ -799,7 +836,21 @@ class Parsed:
                 # Update state for next line
                 result_state_stack = starting_state_stack.duplicate()
                 table_state = result_state_stack.top()
-                table_state.parameters["current_col"] = colspan
+
+                # Count total columns on this line (first cell + additional delimiters)
+                total_cols_on_line = colspan
+                if len(delimiters_found) > 1:
+                    # Multiple delimiters on this line - parse remaining cells
+                    for i in range(1, len(delimiters_found)):
+                        delim_match = delimiters_found[i]
+                        content_after = clean_text[delim_match.end():]
+                        cell_spec_match = regexes.CELL_SPEC_START.match(content_after)
+                        cell_colspan = 1
+                        if cell_spec_match and cell_spec_match.group(1):
+                            cell_colspan = int(float(cell_spec_match.group(1)))
+                        total_cols_on_line += cell_colspan
+
+                table_state.parameters["current_col"] = total_cols_on_line
                 table_state.parameters["cell_open"] = len(delimiters_found) == 1  # Open if only one delimiter
                 table_state.parameters["in_quotes"] = in_quotes
 
