@@ -48,9 +48,9 @@ class StateSubtype(Enum):
     BLOCK_ATTRIBUTES = auto()
 
     # For IN_TABLE only
-    ROW_START = auto()
-    COLUMN_BOUNDARY = auto()
-    IN_CELL = auto()
+    ROW_BOUNDARY = auto()  # Line contains a row boundary
+    CELL_BOUNDARY = auto()  # Line contains cell delimiters but no row boundary
+    IN_CELL = auto()  # Line fully inside a cell (no delimiters)
 
 
 
@@ -93,8 +93,8 @@ VALID_SUBTYPES: Dict[StateType, Set[StateSubtype]] = {
         StateSubtype.NORMAL
     },
     StateType.IN_TABLE: {
-        StateSubtype.ROW_START,
-        StateSubtype.COLUMN_BOUNDARY,
+        StateSubtype.ROW_BOUNDARY,
+        StateSubtype.CELL_BOUNDARY,
         StateSubtype.IN_CELL
     },
 }

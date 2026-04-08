@@ -211,11 +211,6 @@ class Parsed:
         # check for closing of the top delimited block, if available
         if (delimiter := starting_state_stack.top_delimiter()):
             if clean_text == delimiter:
-                # Special handling for tables - close any open row
-                if (starting_state_stack.top().type == StateType.DELIMITED_BLOCK and
-                    starting_state_stack.top().subtype == StateSubtype.TABLE):
-                    self._close_table_row(starting_state_stack)
-
                 # The state of the line is the end delimiter in that delimited block
                 line.state_stack.copy(starting_state_stack)
                 line.state_stack.pop_until_delimited_block(inclusive = False)
@@ -229,52 +224,184 @@ class Parsed:
                 line.state_stack.push(delim_state)
                 return result_state_stack
 
-        # Table content parsing
+        # Table content parsing - simplified boundary detection
         if (starting_state_stack.top().type == StateType.DELIMITED_BLOCK and
             starting_state_stack.top().subtype == StateSubtype.TABLE):
-            # Determine if line contains column delimiters
+
             table_state = starting_state_stack.top()
             table_format = table_state.get("format")
+            expected_col_count = table_state.get("expected_col_count", -1)
+            current_col = table_state.get("current_col", 0)
 
-            has_column_delimiter = False
+            # Determine delimiter character and regex
             if table_format == 'psv':
-                has_column_delimiter = '|' in clean_text
+                delim_char = '|'
+                delim_regex = re.compile(r'(?<!\\)\|')
             elif table_format == 'csv':
-                has_column_delimiter = ',' in clean_text
-
-            if has_column_delimiter:
-                # Line has column delimiter - parse table structure
-                return self._parse_table_line(line, clean_text, starting_state_stack)
+                delim_char = ','
+                delim_regex = re.compile(r',')
             else:
-                # No column delimiter - this could be end of first row for implicit columns
-                # or continuation of a multi-line cell
+                raise RuntimeError(f"Unsupported table format: {table_format}")
 
-                # Check if we need to infer column count (first row with implicit columns)
-                colspecs = table_state.get("colspecs", [])
-                current_row = table_state.get("current_row", 0)
-                current_col = table_state.get("current_col", 0)
-                explicit_cols = table_state.get("explicit_cols", False)
+            # Find all delimiters on this line
+            delimiters = list(delim_regex.finditer(clean_text))
 
-                if not explicit_cols and current_row == 0 and current_col > 0:
-                    # First row with implicit columns - infer column count now
-                    inferred_colcount = current_col
-                    table_state.parameters["colspecs"] = [{"style": None} for _ in range(inferred_colcount)]
-                    table_state.parameters["explicit_cols"] = True  # Mark as inferred (now known)
-                    logger.info(f"Inferred {inferred_colcount} columns from first table row at line {line.id}")
+            if not delimiters:
+                # No delimiters - line is fully inside a cell
+                line.state_stack.copy(starting_state_stack)
+                line.state_stack.push(State(StateType.IN_TABLE, StateSubtype.IN_CELL, {}))
+                return starting_state_stack
 
-                    # Check if there are any conditionals in the table - warn if so
-                    # (Will implement conditional check later if needed)
+            # Count columns added by this line (including colspan)
+            # Also track ALL row boundaries (could be multiple per line)
+            cols_on_line = 0
+            boundary_delim_indices = []  # List of delimiter indices that trigger row boundaries
+            rowspans_to_save = {}  # {col_idx: remaining_rows} for cells with rowspan
 
-                # Now continue with normal cell content handling
-                if self._in_asciidoc_table_cell(starting_state_stack):
-                    # Let normal parsing handle this line (paragraph, list, conditional, etc.)
-                    # Fall through to normal parsing logic
-                    pass
+            for idx, delim_match in enumerate(delimiters):
+                # Parse cell spec BEFORE this delimiter
+                # Cell spec format: [multiplier*][colspan][.rowspan][+|*][align][style]|content
+                # The spec is the text immediately before the |
+
+                if idx == 0:
+                    # First delimiter - spec is from start of line
+                    spec_text = clean_text[:delim_match.start()]
                 else:
-                    # Non-'a' cell - treat as verbatim
-                    line.state_stack.copy(starting_state_stack)
-                    line.state_stack.push(State(StateType.IN_TABLE, StateSubtype.IN_CELL))
-                    return starting_state_stack
+                    # Subsequent delimiter - spec is from previous delimiter's end
+                    prev_delim_end = delimiters[idx-1].end()
+                    spec_text = clean_text[prev_delim_end:delim_match.start()]
+
+                # Match cell spec at END of spec_text (just before the |)
+                spec_text = spec_text.rstrip()
+
+                colspan = 1
+                rowspan = 1
+                # Simple pattern: look for digits followed by optional .digits followed by +
+                # Examples: "2+", "3.2+", ".2+"
+                spec_pattern = re.search(r'(\d+(?:\.\d+)?|\.\d+)\+\s*$', spec_text)
+                if spec_pattern:
+                    span_spec = spec_pattern.group(1)
+                    if '.' in span_spec:
+                        parts = span_spec.split('.')
+                        if parts[0]:
+                            colspan = int(float(parts[0]))
+                        if parts[1]:
+                            rowspan = int(float(parts[1]))
+                    else:
+                        colspan = int(float(span_spec))
+
+                    # Save rowspan for next row's column offset
+                    if rowspan > 1:
+                        col_idx = current_col + cols_on_line
+                        rowspans_to_save[col_idx] = rowspan - 1
+
+                # Check if adding this cell crosses the expected column count
+                if expected_col_count > 0 and current_col + cols_on_line + colspan >= expected_col_count:
+                    # ROW BOUNDARY - this delimiter completes a row
+                    boundary_delim_indices.append(idx)
+                    # Reset for next row (columns after this boundary)
+                    cols_on_line = 0
+                    current_col = 0
+
+                cols_on_line += colspan
+
+            # Handle implicit column inference (line starting with delimiter after first row accumulation)
+            if expected_col_count == -1 and current_col > 0 and clean_text.lstrip().startswith(delim_char):
+                # Infer column count from accumulated cells
+                expected_col_count = current_col
+                table_state.parameters["expected_col_count"] = expected_col_count
+                logger.info(f"Inferred {expected_col_count} columns from first table row at line {line.id}")
+                boundary_delim_indices = [0]  # First delimiter is the boundary
+
+            if boundary_delim_indices:
+                # ROW_BOUNDARY - determine content before/after
+                # Note: If multiple boundaries exist, both flags are automatically True
+                if len(boundary_delim_indices) > 1:
+                    # Multiple row boundaries on this line - content exists between them
+                    has_content_before = True
+                    has_content_after = True
+                    # Use LAST boundary for next row calculation
+                    last_boundary_idx = boundary_delim_indices[-1]
+                else:
+                    # Single row boundary - check content before/after
+                    boundary_delim_idx = boundary_delim_indices[0]
+                    boundary_delim = delimiters[boundary_delim_idx]
+                    boundary_pos = boundary_delim.start()
+
+                    # Check content BEFORE boundary
+                    # Content before includes all text/delimiters before this boundary delimiter
+                    # Exclude whitespace and cell spec modifiers (the colspan/rowspan before the delimiter)
+                    if boundary_delim_idx == 0:
+                        # Boundary is first delimiter - check if anything before it
+                        text_before = clean_text[:boundary_pos].strip()
+                        # Remove cell spec pattern from end
+                        text_before = re.sub(r'(\d+(?:\.\d+)?|\.\d+)\+\s*$', '', text_before).strip()
+                        has_content_before = bool(text_before)
+                    else:
+                        # Boundary is not first delimiter - previous delimiters count as content
+                        has_content_before = True
+
+                    # Check content AFTER boundary
+                    # Content after includes all text/delimiters after this boundary delimiter
+                    has_content_after = bool(clean_text[boundary_delim.end():].strip()) or len(delimiters[boundary_delim_idx+1:]) > 0
+
+                    last_boundary_idx = boundary_delim_idx
+
+                # Emit ROW_BOUNDARY state
+                line.state_stack.copy(starting_state_stack)
+                line.state_stack.push(State(StateType.IN_TABLE, StateSubtype.ROW_BOUNDARY, {
+                    "content_before": has_content_before,
+                    "content_after": has_content_after
+                }))
+
+                # Update state for next line - reset to start of new row
+                result_state_stack = starting_state_stack.duplicate()
+                table_state = result_state_stack.top()
+
+                # Count columns after LAST boundary (for next row's starting position)
+                # Note: boundary delimiter itself starts a cell in the new row
+                cols_after_boundary = 0
+                for idx in range(last_boundary_idx, len(delimiters)):
+                    delim_match = delimiters[idx]
+
+                    # Parse cell spec BEFORE this delimiter
+                    if idx == 0:
+                        spec_text = clean_text[:delim_match.start()]
+                    else:
+                        prev_delim_end = delimiters[idx-1].end()
+                        spec_text = clean_text[prev_delim_end:delim_match.start()].rstrip()
+
+                    # Extract colspan
+                    colspan = 1
+                    spec_pattern = re.search(r'(\d+(?:\.\d+)?|\.\d+)\+\s*$', spec_text)
+                    if spec_pattern:
+                        span_spec = spec_pattern.group(1)
+                        if '.' in span_spec:
+                            parts = span_spec.split('.')
+                            if parts[0]:
+                                colspan = int(float(parts[0]))
+                        else:
+                            colspan = int(float(span_spec))
+
+                    cols_after_boundary += colspan
+
+                # Save rowspans for next row's column counting
+                if rowspans_to_save:
+                    table_state.parameters["rowspans"] = rowspans_to_save
+
+                table_state.parameters["current_col"] = cols_after_boundary
+                return result_state_stack
+
+            else:
+                # CELL_BOUNDARY - has delimiters but no row boundary
+                line.state_stack.copy(starting_state_stack)
+                line.state_stack.push(State(StateType.IN_TABLE, StateSubtype.CELL_BOUNDARY, {}))
+
+                # Update column counter for next line
+                result_state_stack = starting_state_stack.duplicate()
+                table_state = result_state_stack.top()
+                table_state.parameters["current_col"] = current_col + cols_on_line
+                return result_state_stack
 
         # If we were verbatim: as we already checked for a closing delimiter, we continue the state and return
         if starting_state_stack.top().subtype == StateSubtype.VERBATIM:
@@ -332,10 +459,9 @@ class Parsed:
             # Check if this is a parseable table (PSV/CSV)
             tbl_format = regexes.table_format(delimiter)
             if tbl_format:
-                # Parseable table - extract column specs if available
+                # Parseable table - extract column count if available
                 # Walk backwards through blank lines, comments, conditionals, block prefixes
                 cols_attr = None
-                colspecs = []
                 walk_line = self.previous_line(line)
                 while walk_line:
                     top_state = walk_line.state_stack.top()
@@ -355,7 +481,6 @@ class Parsed:
                         match = re.search(r'cols="([^"]+)"', walk_line.content)
                         if match:
                             cols_attr = match.group(1)
-                            colspecs = self._parse_table_cols_attribute(cols_attr)
                             break
                         # Found block attributes but no cols - continue searching
                         walk_line = self.previous_line(walk_line)
@@ -375,12 +500,9 @@ class Parsed:
                     "delimiter": delimiter,
                     "block_start_line": first_line,
                     "format": tbl_format,
-                    "colspecs": colspecs,
-                    "explicit_cols": cols_attr is not None,
-                    "current_row": 0,
+                    "expected_col_count": self._parse_table_cols_count(cols_attr) if cols_attr else -1,
                     "current_col": 0,
-                    "cell_open": False,
-                    "in_quotes": False,  # For CSV format
+                    "rowspans": {},  # Track active rowspans {col_idx: remaining_rows}
                 }
 
                 # Push DELIMITED_BLOCK/TABLE state
@@ -654,291 +776,23 @@ class Parsed:
         result_state_stack.push(next_line_paragraph_state)
         return result_state_stack
 
-    def _parse_table_cols_attribute(self, cols_attr: str) -> List[Dict[str, Any]]:
-        """Parse the cols attribute to determine column specifications.
+    def _parse_table_cols_count(self, cols_attr: str) -> int:
+        """Extract column count from cols attribute.
 
-        Format: "3*" or "1,2,3" or "e,m,^,>s"
-
-        Returns: List of column specs with 'style' key ('a' for asciidoc cells)
+        Format: "3*" or "1,2,3" - returns number of columns
+        Ignores alignment/style modifiers - we only need the count.
         """
         if not cols_attr:
-            return []
+            return -1  # Implicit columns
 
-        colspecs = []
-        # Split by comma or semicolon
-        for spec in re.split(r'[,;]', cols_attr):
-            spec = spec.strip()
-            if not spec:
-                continue
+        # Handle repeat syntax: "3*" means 3 columns
+        match = re.match(r'(\d+)\*', cols_attr)
+        if match:
+            return int(match.group(1))
 
-            # Handle repeat syntax: "3*" means 3 columns
-            if '*' in spec:
-                match = re.match(r'(\d+)\*(.*)$', spec)
-                if match:
-                    count = int(match.group(1))
-                    rest = match.group(2)
-                    for _ in range(count):
-                        colspecs.append(self._parse_single_colspec(rest))
-                    continue
-
-            colspecs.append(self._parse_single_colspec(spec))
-
-        return colspecs
-
-    def _parse_single_colspec(self, spec: str) -> Dict[str, Any]:
-        """Parse a single column specification.
-
-        Format: [width][align][style]
-        Examples: "a", "e", "m", "^", ">s", "1", "20%"
-        """
-        # Extract style character at the end (a-z)
-        style = None
-        if spec and spec[-1].isalpha():
-            # Check common styles: a, e, s, l, d, m, h
-            if spec[-1] in ['a', 'e', 's', 'l', 'd', 'm', 'h']:
-                style = spec[-1]
-
-        return {'style': style}
-
-    def _in_asciidoc_table_cell(self, state_stack: StateStack) -> bool:
-        """Check if currently in an AsciiDoc table cell ('a' style).
-
-        Returns True if the current cell allows AsciiDoc parsing.
-        """
-        table_state = state_stack.top()
-        colspecs = table_state.get("colspecs", [])
-        current_col = table_state.get("current_col", 0)
-
-        if colspecs and current_col < len(colspecs):
-            return colspecs[current_col].get('style') == 'a'
-
-        return False
-
-    def _parse_table_line(self, line: Line, clean_text: str, starting_state_stack: StateStack) -> StateStack:
-        """Parse a line within a table, detecting row and column boundaries.
-
-        State stack organization:
-        - Base: DELIMITED_BLOCK/TABLE (contains table parameters)
-        - Middle: IN_TABLE/ROW_START, COLUMN_BOUNDARY, or IN_CELL
-        - Top (for 'a' cells): PARAGRAPH, LIST_ITEM, etc.
-
-        Returns the state stack for the next line.
-        """
-        # Get table parameters from DELIMITED_BLOCK/TABLE state
-        table_state = starting_state_stack.top()
-        table_format = table_state.get("format")
-        colspecs = table_state.get("colspecs", [])
-        explicit_cols = table_state.get("explicit_cols", False)
-        current_col = table_state.get("current_col", 0)
-        current_row = table_state.get("current_row", 0)
-        cell_open = table_state.get("cell_open", False)
-        in_quotes = table_state.get("in_quotes", False)
-
-        # Determine delimiter character
-        if table_format == 'psv':
-            delim_char = '|'
-            delim_regex = re.compile(r'(?<!\\)\|')  # Unescaped |
-        elif table_format == 'csv':
-            delim_char = ','
-            delim_regex = re.compile(r',')
-        else:
-            raise RuntimeError(f"Unsupported table format: {table_format}")
-
-        # Check if line starts with delimiter (new cell/row)
-        starts_with_delim = clean_text.lstrip().startswith(delim_char)
-
-        # For CSV: handle quoted strings
-        if table_format == 'csv':
-            # Count quotes to determine if we're inside a quoted cell
-            quote_count = clean_text.count('"')
-            if in_quotes:
-                in_quotes = quote_count % 2 == 0  # Even quotes closes
-            else:
-                in_quotes = quote_count % 2 == 1  # Odd quotes opens
-
-        # Find all delimiter positions in the line
-        delimiters_found = list(delim_regex.finditer(clean_text))
-
-        # Determine line state
-        expected_col_count = len(colspecs) if colspecs else -1  # -1 means infer from first row
-
-        if starts_with_delim and not cell_open and not in_quotes:
-            # Line starts with delimiter - could be new row OR new column in same row
-            # First, check if we need to infer column count from first row
-            if expected_col_count == -1 and current_row == 0 and current_col > 0:
-                # First row with implicit columns - line starting with | means end of first row
-                # Infer column count now
-                inferred_colcount = current_col
-                colspecs = [{"style": None} for _ in range(inferred_colcount)]
-                table_state.parameters["colspecs"] = colspecs
-                table_state.parameters["explicit_cols"] = True  # Mark as inferred (now known)
-                expected_col_count = inferred_colcount
-                logger.info(f"Inferred {inferred_colcount} columns from first table row at line {line.id}")
-
-            # Now determine if this is a new row or new column
-            # New row if: we've completed expected column count (or very first row)
-            # New column if: we haven't reached expected column count yet
-
-            is_new_row = False
-            if current_col == 0:
-                # Very first row of the table
-                is_new_row = True
-            elif expected_col_count > 0 and current_col >= expected_col_count:
-                # We've reached the expected count (explicit or inferred)
-                is_new_row = True
-            # Note: For implicit columns before inference (expected_col_count == -1),
-            # we continue adding columns to the first row
-
-            # Parse cell spec (same for both new row and new column)
-            content_after_delim = clean_text.lstrip()[1:]  # Remove leading delimiter
-            cell_spec_match = regexes.CELL_SPEC_START.match(content_after_delim)
-
-            colspan = 1
-            rowspan = 1
-            is_asciidoc = False
-
-            if cell_spec_match:
-                if cell_spec_match.group(1):
-                    colspan = int(float(cell_spec_match.group(1)))
-                if cell_spec_match.group(2):
-                    rowspan = int(float(cell_spec_match.group(2)))
-                style = cell_spec_match.group(5)
-                is_asciidoc = (style == 'a')
-
-            # Check column spec for 'a' modifier if no cell spec
-            if not is_asciidoc and colspecs and current_col < len(colspecs):
-                is_asciidoc = (colspecs[current_col].get('style') == 'a')
-
-            if is_new_row:
-                # NEW ROW: Close previous row and push ROW_START state
-                if current_col > 0:
-                    self._close_table_row(starting_state_stack)
-
-                # Extract inline content (after cell spec)
-                if cell_spec_match:
-                    content_text = content_after_delim[cell_spec_match.end():].lstrip()
-                else:
-                    content_text = content_after_delim.lstrip()
-
-                has_inline_content = bool(content_text.strip())
-
-                # Build line state stack: DELIMITED_BLOCK/TABLE → IN_TABLE/ROW_START → [PARAGRAPH/FIRST_LINE if 'a' with content]
-                line.state_stack.copy(starting_state_stack)
-                line.state_stack.push(State(StateType.IN_TABLE, StateSubtype.ROW_START,
-                                           {"row_number": current_row, "end_line": -1,
-                                            "is_asciidoc": is_asciidoc}))
-
-                # If 'a' cell with inline content, start a paragraph on top
-                if is_asciidoc and has_inline_content:
-                    line.state_stack.push(State(StateType.PARAGRAPH, StateSubtype.FIRST_LINE,
-                                               {"first_line": line.id}))
-
-                # Update state for next line
-                result_state_stack = starting_state_stack.duplicate()
-                table_state = result_state_stack.top()
-
-                # Count total columns on this line (first cell + additional delimiters)
-                total_cols_on_line = colspan
-                if len(delimiters_found) > 1:
-                    # Multiple delimiters on this line - parse remaining cells
-                    for i in range(1, len(delimiters_found)):
-                        delim_match = delimiters_found[i]
-                        content_after = clean_text[delim_match.end():]
-                        cell_spec_match = regexes.CELL_SPEC_START.match(content_after)
-                        cell_colspan = 1
-                        if cell_spec_match and cell_spec_match.group(1):
-                            cell_colspan = int(float(cell_spec_match.group(1)))
-                        total_cols_on_line += cell_colspan
-
-                table_state.parameters["current_col"] = total_cols_on_line
-                table_state.parameters["cell_open"] = len(delimiters_found) == 1  # Open if only one delimiter
-                table_state.parameters["in_quotes"] = in_quotes
-
-                # For next line: if 'a' cell with inline content, continue paragraph
-                if is_asciidoc and has_inline_content and table_state.parameters["cell_open"]:
-                    result_state_stack.push(State(StateType.IN_TABLE, StateSubtype.ROW_START,
-                                                 {"row_number": current_row, "end_line": -1,
-                                                  "is_asciidoc": is_asciidoc}))
-                    result_state_stack.push(State(StateType.PARAGRAPH, StateSubtype.NORMAL,
-                                                 {"first_line": line.id}))
-
-                return result_state_stack
-            else:
-                # NEW COLUMN in same row: line starts with delimiter but we haven't reached column count
-                # Push COLUMN_BOUNDARY state and update column counter
-                line.state_stack.copy(starting_state_stack)
-                line.state_stack.push(State(StateType.IN_TABLE, StateSubtype.COLUMN_BOUNDARY,
-                                           {"column_number": current_col}))
-
-                # Update column counter
-                result_state_stack = starting_state_stack.duplicate()
-                table_state = result_state_stack.top()
-                table_state.parameters["current_col"] = current_col + colspan
-                table_state.parameters["cell_open"] = len(delimiters_found) == 1  # Open if only one delimiter
-                table_state.parameters["in_quotes"] = in_quotes
-
-                return result_state_stack
-
-        elif len(delimiters_found) > 0 and not in_quotes:
-            # Line contains column boundary but doesn't start a row
-            # Or it's a continuation with column boundaries
-
-            line.state_stack.copy(starting_state_stack)
-            line.state_stack.push(State(StateType.IN_TABLE, StateSubtype.COLUMN_BOUNDARY,
-                                       {"column_number": current_col}))
-
-            # Update column counter
-            result_state_stack = starting_state_stack.duplicate()
-            table_state = result_state_stack.top()
-
-            # Parse cell specs for each delimiter to track colspan
-            for delim_match in delimiters_found:
-                content_after = clean_text[delim_match.end():]
-                cell_spec_match = regexes.CELL_SPEC_START.match(content_after)
-                colspan = 1
-                if cell_spec_match and cell_spec_match.group(1):
-                    colspan = int(float(cell_spec_match.group(1)))
-                current_col += colspan
-
-            table_state.parameters["current_col"] = current_col
-            table_state.parameters["cell_open"] = not clean_text.rstrip().endswith(delim_char)
-            table_state.parameters["in_quotes"] = in_quotes
-
-            return result_state_stack
-
-        # Note: The else branch for lines without column delimiters is handled
-        # in the main _parse_line method before calling this function.
-        # This method only handles lines WITH column delimiters.
-        else:
-            # This shouldn't normally be reached, but handle it gracefully
-            logger.warning(f"_parse_table_line called on line {line.id} without clear column delimiter")
-            line.state_stack.copy(starting_state_stack)
-            return starting_state_stack
-
-    def _close_table_row(self, state_stack: StateStack):
-        """Close the current table row by setting end_line on ROW_START state."""
-        # Walk backwards to find the most recent ROW_START
-        # Note: ROW_START might not be at top of stack (could have PARAGRAPH on top for 'a' cells)
-        for i in range(len(self.lines) - 1, -1, -1):
-            check_line = self.lines[i]
-            # Search through state stack for IN_TABLE/ROW_START
-            row_start_state = check_line.state_stack.top_by_type_and_subtype(
-                StateType.IN_TABLE, StateSubtype.ROW_START
-            )
-            if row_start_state and row_start_state.get("end_line") == -1:
-                # Find last non-blank line
-                last_line = self.lines[-1] if self.lines else None
-                while last_line and last_line.content.strip() == "":
-                    last_line = self.previous_line(last_line)
-                if last_line:
-                    row_start_state.parameters["end_line"] = last_line.id
-                break
-
-        # Reset column counter in DELIMITED_BLOCK/TABLE state
-        table_state = state_stack.top()
-        table_state.parameters["current_col"] = 0
-        table_state.parameters["cell_open"] = False
-        table_state.parameters["current_row"] = table_state.get("current_row", 0) + 1
+        # Count comma/semicolon-separated specs
+        specs = [s.strip() for s in re.split(r'[,;]', cols_attr) if s.strip()]
+        return len(specs)
 
     def __init__(self, lines: List[str]):
         self.last_original_id = -1
