@@ -276,19 +276,19 @@ class Parsed:
 
                 colspan = 1
                 rowspan = 1
-                # Simple pattern: look for digits followed by optional .digits followed by +
-                # Examples: "2+", "3.2+", ".2+"
+                # Cell spec pattern: [colspan][.rowspan]+
+                # Examples: "2+" (colspan=2), "3.2+" (colspan=3, rowspan=2), ".2+" (rowspan=2)
                 spec_pattern = re.search(r'(\d+(?:\.\d+)?|\.\d+)\+\s*$', spec_text)
                 if spec_pattern:
                     span_spec = spec_pattern.group(1)
                     if '.' in span_spec:
                         parts = span_spec.split('.')
-                        if parts[0]:
-                            colspan = int(float(parts[0]))
-                        if parts[1]:
-                            rowspan = int(float(parts[1]))
-                    else:
-                        colspan = int(float(span_spec))
+                        if parts[0]:  # colspan.rowspan (e.g., "3.2+")
+                            colspan = int(parts[0])
+                        if parts[1]:  # Handle both "3.2+" and ".2+" cases
+                            rowspan = int(parts[1])
+                    else:  # Just colspan (e.g., "2+")
+                        colspan = int(span_spec)
 
                     # Save rowspan for next row's column offset
                     if rowspan > 1:
@@ -371,17 +371,18 @@ class Parsed:
                         prev_delim_end = delimiters[idx-1].end()
                         spec_text = clean_text[prev_delim_end:delim_match.start()].rstrip()
 
-                    # Extract colspan
+                    # Extract colspan (ignore rowspan for column counting after boundary)
                     colspan = 1
                     spec_pattern = re.search(r'(\d+(?:\.\d+)?|\.\d+)\+\s*$', spec_text)
                     if spec_pattern:
                         span_spec = spec_pattern.group(1)
                         if '.' in span_spec:
                             parts = span_spec.split('.')
-                            if parts[0]:
-                                colspan = int(float(parts[0]))
-                        else:
-                            colspan = int(float(span_spec))
+                            if parts[0]:  # colspan.rowspan (e.g., "3.2+")
+                                colspan = int(parts[0])
+                            # else: .rowspan (e.g., ".2+") → colspan stays 1
+                        else:  # Just colspan (e.g., "2+")
+                            colspan = int(span_spec)
 
                     cols_after_boundary += colspan
 
@@ -779,11 +780,15 @@ class Parsed:
     def _parse_table_cols_count(self, cols_attr: str) -> int:
         """Extract column count from cols attribute.
 
-        Format: "3*" or "1,2,3" - returns number of columns
+        Format: "3" or "3*" or "1,2,3" - returns number of columns
         Ignores alignment/style modifiers - we only need the count.
         """
         if not cols_attr:
             return -1  # Implicit columns
+
+        # Handle bare number: "3" means 3 columns
+        if cols_attr.isdigit():
+            return int(cols_attr)
 
         # Handle repeat syntax: "3*" means 3 columns
         match = re.match(r'(\d+)\*', cols_attr)
