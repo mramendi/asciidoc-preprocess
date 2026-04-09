@@ -188,7 +188,11 @@ class Parsed:
             elif operator in ["ifdef", "ifndef"] and expression_before.strip() and expression_inside.strip():
                 # Single-line conditional: has content both before and inside []
                 subtype = StateSubtype.SINGLE_LINE
-                params["operator"] = operator
+                params = {
+                    "operator": operator,
+                    "expression": expression_before,
+                    "content": expression_inside
+                }
             else:
                 # START
                 subtype = StateSubtype.START
