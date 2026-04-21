@@ -28,7 +28,8 @@ class StateSubtype(Enum):
 
     # For DELIMITED_BLOCK only
     VERBATIM = auto()
-    TABLE = auto()  # Table block (parseable tables)
+    TABLE_SUPPORTED = auto()  # Table block (parseable tables)
+    TABLE_UNSUPPORTED = auto()  # Table block (non-parseable tables)
 
     # For most types
     NORMAL = auto()
@@ -60,7 +61,8 @@ VALID_SUBTYPES: Dict[StateType, Set[StateSubtype]] = {
         StateSubtype.START, StateSubtype.END,
         StateSubtype.VERBATIM,
         StateSubtype.NORMAL,
-        StateSubtype.TABLE  # Parseable table blocks
+        StateSubtype.TABLE_SUPPORTED,  # Parseable table blocks
+        StateSubtype.TABLE_UNSUPPORTED
     },
     StateType.PARAGRAPH: {
         StateSubtype.NORMAL,

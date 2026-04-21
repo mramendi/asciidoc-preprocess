@@ -6,7 +6,7 @@ Preprocess AsciiDoc files to handle conditional directives.
 import sys
 import logging
 import argparse
-from parser import Parsed
+from lineparser import Parsed
 from line_types import Line, State, StateType, StateSubtype, StateStack
 from condmap import ConditionalsMap, ConditionalType
 from typing import Set
@@ -305,8 +305,8 @@ def main():
                        help="Debug output file for pretty-printed parse and conditional info")
     parser.add_argument("--log-level",
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                       default='WARNING',
-                       help="Set the logging level (default: WARNING)")
+                       default='INFO',
+                       help="Set the logging level (default: INFO)")
 
     args = parser.parse_args()
 

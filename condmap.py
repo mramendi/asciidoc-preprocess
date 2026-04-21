@@ -1,4 +1,4 @@
-from parser import Parsed
+from lineparser import Parsed
 from line_types import Line, State, StateType, StateSubtype, StateStack
 from typing import Optional, List, Set
 from enum import Enum, auto
