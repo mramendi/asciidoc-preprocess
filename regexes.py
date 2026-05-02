@@ -326,7 +326,7 @@ def parse_block_attributes(line: str) -> dict[str, str]:
 
     return result
 
-def parse_table_cols_count(self, cols_attr: str) -> int:
+def parse_table_cols_count(cols_attr: str) -> int:
     """Extract column count from the value of a cols attribute for an Asciidoc table.
        IMPORTANT: assumes the value is not blank, as a blank value is ignored by Asciidoctor
     """
@@ -346,10 +346,10 @@ def parse_table_cols_count(self, cols_attr: str) -> int:
 
 # Regular expressions for parsing table specs
 # Extracted from Asciidoctor using Claude Code
-"""
-  Capture Groups (same for both START and END)                                                                                                                                                                                                               
-                  
-  Group 1: Number (optional)                                                                                                                                                                                                                                 
+r"""
+  Capture Groups (same for both START and END)
+
+  Group 1: Number (optional)
   - Pattern: (\d+(?:\.\d*)?|(?:\d*\.)?\d+)
   - Examples: 2, 3.2, .5, 2.                                                                                                                                                                                                                                 
   - Used for: colspan/rowspan (when with +) or repeat count (when with *)

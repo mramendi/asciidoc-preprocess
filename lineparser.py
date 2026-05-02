@@ -302,6 +302,7 @@ class Parsed:
                 result_state_stack.push(table_state) 
                 return result_state_stack
             
+            logger.debug(f"line {line.id} cell boundaries: {str(cell_boundaries)}")
             
             row_boundaries = [] # indices of row boundaries *within the cell_boundaries list*
 
@@ -342,21 +343,33 @@ class Parsed:
                     # increase current_column SKIPPING any numbers "rowspanned"
                     # column numbers are 1-based
                     # current_column==0 only at the start of the table pre first boundary
-                    current_column += 1
-                    while current_column in rowspans:
-                        rowspans[current_column] -= 1
-                        if rowspans[current_column] <= 0:
-                            del rowspans[current_column]
+                    #  ...and at start of second row after counting out the first - in both cases it's a row boundary
+                    if current_column == 0:
+                        row_boundaries.append(idx)
+
+                    while True:
                         current_column += 1
 
-                    # if we reached a row boundary, record it and flip current_column to 1
-                    if current_column > column_count:
-                        row_boundaries.append(idx)
-                        current_column = 1
+                        # if we reached a row boundary, record it and flip current_column to 1
+                        if (column_count > 1) and (current_column > column_count):
+                            row_boundaries.append(idx)
+                            current_column = 1
+
+                        # if there is a rowspan affecting this boundary, count it (then loop on), otherwise break
+
+                        if current_column in rowspans:
+                            rowspans[current_column] -= 1
+                            if rowspans[current_column] <= 0:
+                                del rowspans[current_column]
+                        else:
+                            break
+
                     
                     # record the rowspan for the new column (don't forget to substract 1 as the first row is now)
                     if rowspan > 1:
                         rowspans[current_column] = rowspan -1
+
+            logger.debug(f"line {line.id} row boundaries: {str(row_boundaries)}")
 
 
             # now determine the subtype and the data for row boundaries
@@ -365,7 +378,6 @@ class Parsed:
             if row_boundaries:
                 subtype = StateSubtype.ROW_BOUNDARY
                 line_params["has_content_before"] = True
-                line_params["has_content_after"] = True
                 if row_boundaries[0] == 0: 
                     # if the first row boundary is the FIRST cell boundary, maybe no content before?
                     if cell_boundaries[0] == 0:
@@ -374,10 +386,6 @@ class Parsed:
                         pre_separator = clean_text[:cell_boundaries[0]]
                         if regexes.CELL_SPEC_START_RX.match(pre_separator):
                             line_params["has_content_before"] = False # only a spec present before separator
-                if row_boundaries[-1] == len(cell_boundaries)-1: 
-                    # if the row boundary is the LAST cell boundary, maybe no content after?
-                    if cell_boundaries[-1] >= len(clean_text.rstrip())-1: 
-                        line_params["has_content_after"] = False # separator is the last non-blank character
 
             # set the state of this line
             line.state_stack.copy(starting_state_stack)
@@ -512,13 +520,15 @@ class Parsed:
                 block_param["column_count"] = column_count
                 block_param["current_column"] = 0 # for use in counting columns in row
                 block_param["is_first_line"] = True # only for the very first line in the table, for adding missing first 
-                block_param["separator"] = table_format.get("separator","|")
+                block_param["separator"] = table_attribs.get("separator","|")
                 block_param["rowspans"] = {} # Track active rowspans {col_idx: remaining_rows}
 
                 # Push DELIMITED_BLOCK/TABLE_SUPPORTED state
                 result_state_stack.push(State(StateType.DELIMITED_BLOCK, StateSubtype.TABLE_SUPPORTED, block_param))
                 return result_state_stack
             else:
+                logger.warning(f"Unknown delimiter type at line {line.id} - not processed properly")
+                return starting_state_stack
 
 
 

@@ -61,7 +61,7 @@ VALID_SUBTYPES: Dict[StateType, Set[StateSubtype]] = {
         StateSubtype.START, StateSubtype.END,
         StateSubtype.VERBATIM,
         StateSubtype.NORMAL,
-        StateSubtype.TABLE_SUPPORTED,  # Parseable table blocks
+        StateSubtype.TABLE_SUPPORTED,  # Parseable table blocks - currently only PSV
         StateSubtype.TABLE_UNSUPPORTED
     },
     StateType.PARAGRAPH: {
