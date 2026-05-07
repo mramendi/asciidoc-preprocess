@@ -103,6 +103,40 @@ class Parsed:
         """Remove a line from the document by line ID"""
         self.lines.remove(self.line_by_id(line_id))
 
+    def compare_positions(self, line1: int | Line, line2: int | Line) -> int:
+        """Compare the positions of two lines.
+
+        Args:
+            line1: Either a line ID (int) or a Line instance
+            line2: Either a line ID (int) or a Line instance
+
+        Returns:
+            -1 if line1 comes before line2
+             0 if they are the same line
+             1 if line1 comes after line2
+
+        Raises:
+            KeyError: if either line ID does not exist in the document
+        """
+        # Convert IDs to Line instances if needed
+        # line_by_id() will raise KeyError if an ID doesn't exist
+        if isinstance(line1, int):
+            line1 = self.line_by_id(line1)
+        if isinstance(line2, int):
+            line2 = self.line_by_id(line2)
+
+        # Get their indices in the list
+        index1 = self.lines.index(line1)
+        index2 = self.lines.index(line2)
+
+        # Compare positions
+        if index1 < index2:
+            return -1
+        elif index1 > index2:
+            return 1
+        else:
+            return 0
+
 
     def previous_line(self, line: Line) -> Optional[Line]:
         """Get the previous line in the document. Returns None if this is the first line.
@@ -702,7 +736,6 @@ class Parsed:
 
         # Section header line - warn if not in root; mark line, pass thru state
         # Is only processed in root, delimited block, and after a terminated list item/after delim block (terminates list)
-        # can't condition header lines but this comes later
         # We use new_state_stack as the flag - if it's assigned the header line is actually a header line
         if (header_match := regexes.SECTION_HEADER.match(clean_text)):
             level = len(header_match.group(1))  # Count the = signs to get level
@@ -718,10 +751,11 @@ class Parsed:
                 new_state_stack = starting_state_stack.duplicate()
             if new_state_stack:
                 if new_state_stack.top().type == StateType.DELIMITED_BLOCK:
-                    logger.warning(f"Section title inside delimited block on line {line.id}")
+                    logger.warning(f"DISCOURAGED: Section title inside delimited block on line {line.id} - sections can be counted inaccurately")
 
                 # Walk backwards to find section end boundary and close previous sections
                 # First, find the first non-blank, non-comment, non-attribute-block, non-conditional line
+                # If such a line is not found until we hit the start of the file, there are no sections to close
                 section_end_line_id = None
                 walk_line = self.previous_line(line)
                 while walk_line:

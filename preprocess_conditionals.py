@@ -297,7 +297,7 @@ def remove_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
 def main():
     parser = argparse.ArgumentParser(description="Preprocess AsciiDoc files to handle conditional directives")
     parser.add_argument("input_file", help="Input AsciiDoc file")
-    parser.add_argument("output_file", help="Output file")
+    parser.add_argument("output_file", nargs='?', help="Output file (not used in lint mode)")
     parser.add_argument("--list",
                        default="conditionals.lst",
                        help="List file containing conditional values (default: conditionals.lst)")
@@ -307,8 +307,17 @@ def main():
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                        default='INFO',
                        help="Set the logging level (default: INFO)")
+    parser.add_argument("-l", "--lint",
+                       action="store_true",
+                       help="Lint mode: check conditionals without processing (no output file needed)")
 
     args = parser.parse_args()
+
+    # Validate arguments
+    if not args.lint and not args.output_file:
+        parser.error("output_file is required unless --lint mode is used")
+    if args.lint and args.output_file:
+        parser.error("output_file should not be specified in --lint mode")
 
     # Configure logging
     logging.basicConfig(
@@ -318,18 +327,21 @@ def main():
 
     input_file = args.input_file
     output_file = args.output_file
-    list_file = args.list
 
-    # Read list file and create values set
-    try:
-        with open(list_file, 'r', encoding='utf-8') as f:
-            values = set(line.strip() for line in f if line.strip())
-    except FileNotFoundError:
-        print(f"Error: List file '{list_file}' not found", file=sys.stderr)
-        sys.exit(1)
-    except IOError as e:
-        print(f"Error reading list file: {e}", file=sys.stderr)
-        sys.exit(1)
+    # Read list file and create values set (skip in lint mode)
+    if args.lint:
+        values = None
+    else:
+        list_file = args.list
+        try:
+            with open(list_file, 'r', encoding='utf-8') as f:
+                values = set(line.strip() for line in f if line.strip())
+        except FileNotFoundError:
+            print(f"Error: List file '{list_file}' not found", file=sys.stderr)
+            sys.exit(1)
+        except IOError as e:
+            print(f"Error reading list file: {e}", file=sys.stderr)
+            sys.exit(1)
 
     # Read input file
     try:
@@ -359,6 +371,11 @@ def main():
         except IOError as e:
             print(f"Error writing debug output file: {e}", file=sys.stderr)
             sys.exit(1)
+
+    # Skip processing in lint mode
+    if args.lint:
+        print(f"Lint mode: analyzed {input_file}")
+        return
 
     # Process conditionals
     process_conditionals(parsed, cond_map)
