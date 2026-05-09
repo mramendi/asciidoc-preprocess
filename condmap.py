@@ -92,6 +92,17 @@ class ConditionalsMap:
 
             # at this point the line at idx is a conditional
 
+            # if the conditional is inside a verbatim delimited block, it is unsupported
+            delim_state = start_line.state_stack.top_by_type(StateType.DELIMITED_BLOCK)
+            if delim_state:
+                if delim_state.subtype == StateSubtype.VERBATIM:
+                    logger.error(f"UNSUPPORTED: conditional inside a verbatim block or an unsupported table, line {start_line.id}")
+                    if ( end_id := top_state.get("end_line") ):
+                        end_ids_unsupported.add(end_id)
+                    idx+=1
+                    continue
+
+
             # if it is an end, we somehow did not see the start, output a warning
             # ...except if this is the end of an unsupported conditional, just skip it
             if top_state.subtype == StateSubtype.END:
@@ -182,14 +193,14 @@ class ConditionalsMap:
                 #  for a block title line it is only "no support" if the first line starts a block
                 if prev_line_top_state.type == StateType.BLOCK_PREFIX:
                     if prev_line_top_state.subtype == StateSubtype.BLOCK_ATTRIBUTES:
-                        logger.warning(f"[Block attributes] immediately before conditional at line {start_line.id} - unsupported")
+                        logger.error(f"UNSUPPORTED: [Block attributes] immediately before conditional at line {start_line.id}")
                         end_ids_unsupported.append(end_line_id)
                         idx+=1
                         continue
                     if prev_line_top_state.subtype == StateSubtype.BLOCK_TITLE:
                         next_line = self.parsed.next_line(start_line)
                         if next_line.state_stack.top().type == StateType.DELIMITED_BLOCK:
-                            logger.warning(f"Conditional cuts .BlockTitle off delimited block at line {start_line.id} - unsupported")
+                            logger.error(f"UNSUPPORTED:Conditional cuts .BlockTitle off delimited block at line {start_line.id}")
                             end_ids_unsupported.append(end_line_id)
                             idx+=1
                             continue
@@ -201,6 +212,51 @@ class ConditionalsMap:
                 # just skip past the end
                 idx = self.parsed.index(end_line)+1
                 continue
+
+            # skip what is not content at all (blank lines ARE content)
+            failout = False
+            while True:
+                if (not first_line) or (first_line.id == end_line.id):
+                    logger.error(f"UNSUPPORTED: Conditional with no content at line {start_line.id}")
+                    failout = True
+                    break
+                if not first_line.state_stack.top().type in [StateType.CONDITIONAL, 
+                                                                   StateType.BLOCK_PREFIX,
+                                                                   StateType.LINE_COMMENT]:
+                    # also check for block comment
+                    if not ((first_line.state_stack.top().type == StateType.DELIMITED_BLOCK) and 
+                            (first_line.state_stack.top().get("delimiter")[0] == "/")):
+                            break
+                first_line = self.parsed.next_line(first_line)
+            if failout:
+                # just skip past the end
+                idx = self.parsed.index(end_line)+1
+                continue
+
+            # find first NON BLANK line (which is also content)
+            first_non_blank_line = first_line
+            failout = False
+            while True:
+                if (not first_non_blank_line) or (first_non_blank_line.id == end_line.id):
+                    logger.error(f"UNSUPPORTED: Conditional with no content except blank lines at line {start_line.id}")
+                    failout = True
+                    break
+                if first_non_blank_line.content.strio() != "":
+                    if not first_non_blank_line.state_stack.top().type in [StateType.CONDITIONAL, 
+                                                                    StateType.BLOCK_PREFIX,
+                                                                    StateType.LINE_COMMENT]:
+                        # also check for block comment
+                        if not ((first_non_blank_line.state_stack.top().type == StateType.DELIMITED_BLOCK) and 
+                                (first_non_blank_line.state_stack.top().get("delimiter")[0] == "/")):
+                                break
+                first_non_blank_line = self.parsed.next_line(first_non_blank_line)
+            if failout:
+                # just skip past the end
+                idx = self.parsed.index(end_line)+1
+                continue
+
+
+
             last_line = self.parsed.previous_line(end_line)
             # note that first_line and last_line CAN be the same, the subsequent logic should be robust to this
             first_line_top_state = first_line.state_stack.top()
@@ -211,7 +267,7 @@ class ConditionalsMap:
             last_non_blank_line = last_line
             while last_non_blank_line.content.strip() == "":
                 if last_non_blank_line == first_line:
-                    logger.error(f"UNSUPPORTED: Conditional of blanks at line {idx}")
+                    logger.error(f"UNSUPPORTED: Conditional of blanks at line {start_line.id}")
                     # just skip past the end
                     idx = self.parsed.index(end_line)+1
                     continue
@@ -231,7 +287,48 @@ class ConditionalsMap:
             else:
                 next_line_state_stack = None # Fail loudly if we didn't check next_line exists
 
+            
+            # process a conditional inside a (supported) table
+            if first_non_blank_line.state_stack.top().type == StateType.IN_TABLE:
+                is_supported = False
+                # check if the first non-blank line is a row boundary with nothing before it
 
+                if (first_non_blank_line.state_stack.top().subtype == StateSubtype.ROW_BOUNDARY) and 
+                    (first_line_top_state.get("has_content_before") == False):
+
+                    # check if the next line after the conditional is either a row boundary with nothing before it,
+                    # or else ends the table
+                    if next_line_state_stack:
+
+                        # check we are still in the same table to start with!
+                        delim_state = first_non_blank_line.state_stack.top_by_type(StateType.DELIMITED_BLOCK)
+                        block_start_line = delim_state.get("block_start_line")
+                        if next_line_state_stack.top().get("block_start_line") == block_start_line:
+
+                            if ((next_line_state_stack.top().type,next_line_state_stack.top().subtype) ==
+                             (StateType.IN_TABLE,StateSubtype.ROW_BOUNDARY)):
+                                 if next_line_state_stack.top().get("has_content_before") == False:
+                                     is_supported = True
+
+                        if ((next_line_state_stack.top().type,next_line_state_stack.top().subtype) ==
+                             (StateType.DELIMITED_BLOCK,StateSubtype.END)):
+                                 is_supported = True
+
+                if is_supported: 
+                    logger.debug(f"  Classified as TABLE_ROWS: lines {start_line.id}-{end_line_id}")
+                    cond = Conditional(type = ConditionalType.TABLE_ROWS,
+                                        start_id = start_line.id,
+                                        end_id = end_line_id,
+                                        values = condition_values)
+                    self.conditionals.append(cond)
+                    end_ids_unsupported += self._warn_about_nested(first_line, last_line)
+                    idx = self.parsed.index(end_line)+1
+                    continue
+                else:
+                    logger.error(f"UNSUPPORTED: Conditional in a table that does not contain only whole rows, line {start_line.id}")
+                    end_ids_unsupported.append(end_line_id)
+                    idx+=1
+                    continue 
 
             # Process a partial that is clearly a partial from the start side
             # So mid-paragraph or mid-list-item
@@ -436,7 +533,7 @@ class ConditionalsMap:
 
             # if we reach this place, the conditional is not supported
             logger.debug(f"  Skipping (breaks boundary, includes multiple items)")
-            logger.error(f"UNSUPPORTED: Conditional ends mid-paragraph/list item and includes several items, line {start_line.id}  - unsupported")
+            logger.error(f"UNSUPPORTED: Conditional ends mid-paragraph/list item and includes several items, line {start_line.id}")
             end_ids_unsupported.append(end_line_id)
             idx+=1
             continue 

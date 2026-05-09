@@ -46,6 +46,20 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
         cond = cond_map.conditionals[idx]
         logger.debug(f"Processing conditional {idx}: {cond.type.name}, lines {cond.start_id}-{cond.end_id}, values: {', '.join(sorted(cond.values))}")
 
+        # single line conditional is its own thing - subsequent logic does not apply to it so process it first
+        if cond.type == ConditionalType.SINGLE_LINE:
+            if cond.start_id != cond.end_id:
+                raise RuntimeError(f"SINGLE_LINE conditional but start/end not equal, line {cond.start_id}")
+            cond_line = parsed.line_by_id(cond.start_id)
+            conditioned_content = cond_line.state_stack.top.get("content")
+
+            if not conditioned_content:
+                raise RuntimeError(f"SINGLE_LINE conditional but no parsed content, line {cond.start_id}")
+            cond_line.content = "["+dotroles(cond.values)+"]#"+conditioned_content+"#"
+            idx += 1
+            continue
+            
+
         first_line = parsed.next_line(parsed.line_by_id(cond.start_id))
         last_line = parsed.previous_line(parsed.line_by_id(cond.end_id))
 
@@ -53,6 +67,27 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
             logger.debug(f"  Branch: PARTIAL - adding inline roles")
             first_line.prepend("["+dotroles(cond.values)+"]#")
             last_line.append("#")
+        elif cond.type == ConditionalType.TABLE_ROWS:
+            logger.debug(f"  Branch: TABLE_ROWS - adding stubs to each row start")
+
+            # get the separator
+            delim_state = first_non_blank_line.state_stack.top_by_type(StateType.DELIMITED_BLOCK)
+            separator = delim_state.get("separator")
+            if not separator:
+                raise RuntimeError(f"TABLE_ROWS conditional fails to find delimiter, line {cond.start_id}")
+            
+            # find the row starts and add the slug after the first separator
+            current_line = first_line
+            while parsed.compare_positions(current_line,first_line) < 0:
+                if ((current_line.state_stack.top().type,current_line.state_stack.top().subtype) ==
+                             (StateType.IN_TABLE,StateSubtype.ROW_BOUNDARY)):
+                    
+                    pos_separator = current_line.content.find(separator)
+                    content_upto_separator = current_line.content[pos_separator+1:]
+                    content_after_separator = current_line.content[pos_separator+1:]
+                    current_line.content = content_upto_separator+"["+dotroles(cond.values)+"]#{empty}# "+content_after_separator
+                current_line=parsed.next_line(current_line)
+
         elif cond.type == ConditionalType.PART_START_LIST_ITEM:
             logger.debug(f"  Branch: PART_START_LIST_ITEM - adding inline roles to partial list item")
             marker = first_line.state_stack.top().get("marker")
@@ -290,8 +325,9 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
 
 def remove_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
     for cond in cond_map.conditionals:
-        for id in [cond.start_id, cond.end_id]:
-            parsed.remove_by_id(id)
+        if cond.type != ConditionalType.SINGLE_LINE: # single line conditionals don't have separate conditional statement lines
+            for id in [cond.start_id, cond.end_id]:
+                parsed.remove_by_id(id)
 
 
 def main():
