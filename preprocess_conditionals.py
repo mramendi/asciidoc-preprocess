@@ -51,7 +51,7 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
             if cond.start_id != cond.end_id:
                 raise RuntimeError(f"SINGLE_LINE conditional but start/end not equal, line {cond.start_id}")
             cond_line = parsed.line_by_id(cond.start_id)
-            conditioned_content = cond_line.state_stack.top.get("content")
+            conditioned_content = cond_line.state_stack.top().get("content")
 
             if not conditioned_content:
                 raise RuntimeError(f"SINGLE_LINE conditional but no parsed content, line {cond.start_id}")
@@ -71,21 +71,26 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
             logger.debug(f"  Branch: TABLE_ROWS - adding stubs to each row start")
 
             # get the separator
-            delim_state = first_non_blank_line.state_stack.top_by_type(StateType.DELIMITED_BLOCK)
+            delim_state = first_line.state_stack.top_by_type(StateType.DELIMITED_BLOCK)
             separator = delim_state.get("separator")
             if not separator:
-                raise RuntimeError(f"TABLE_ROWS conditional fails to find delimiter, line {cond.start_id}")
-            
+                raise RuntimeError(f"TABLE_ROWS conditional fails to find separator, line {cond.start_id}")
+
+            logger.debug(f"    Separator: '{separator}'")
+
             # find the row starts and add the slug after the first separator
             current_line = first_line
-            while parsed.compare_positions(current_line,first_line) < 0:
+            while parsed.compare_positions(current_line, last_line) <= 0:
+                logger.debug(f"    Processing line {current_line.id}: {current_line.state_stack.top().type}/{current_line.state_stack.top().subtype}")
                 if ((current_line.state_stack.top().type,current_line.state_stack.top().subtype) ==
                              (StateType.IN_TABLE,StateSubtype.ROW_BOUNDARY)):
-                    
+
                     pos_separator = current_line.content.find(separator)
-                    content_upto_separator = current_line.content[pos_separator+1:]
+                    logger.debug(f"      Found ROW_BOUNDARY at line {current_line.id}, separator pos: {pos_separator}")
+                    content_upto_separator = current_line.content[:pos_separator+1]
                     content_after_separator = current_line.content[pos_separator+1:]
                     current_line.content = content_upto_separator+"["+dotroles(cond.values)+"]#{empty}# "+content_after_separator
+                    logger.debug(f"      Modified to: {current_line.content}")
                 current_line=parsed.next_line(current_line)
 
         elif cond.type == ConditionalType.PART_START_LIST_ITEM:
@@ -303,10 +308,16 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
 
 
                 elif current_line_top_state.type == StateType.SECTION_HEADER:
-                    logger.debug(f"    Line {current_line.id}: SECTION_HEADER - creating block attributes (uncertain result)")
-                    # we already warned the user this might get unpredictable
-                    # now we just create the block attributes
+                    logger.debug(f"    Line {current_line.id}: SECTION_HEADER - creating block attributes, skipping section")
                     parsed.create_line_before(current_line, "["+attroles(cond.values)+"]")
+                    section_end_line_id = current_line_top_state.get("end_line")
+                    if not section_end_line_id:
+                        logger.warning(f"Section end not found from line {current_line.id}, results can be unpredictable")
+                    else:
+                        section_end_line = parsed.line_by_id(section_end_line_id)
+                        current_line = parsed.next_line(section_end_line)
+                        continue # immediately continue the loop as we jumped over the section
+
                 else:
                     logger.debug(f"    Line {current_line.id}: Other type ({current_line_top_state.type.name}) - consuming block attributes if content line")
                     # consume block attributes unless the line is blank or non-text
