@@ -255,6 +255,44 @@ ATTRIBUTE_DEFINITION = re.compile(r'''
   - :attr name: value (space in attribute name)
   - Lines that don't start with :     """
 
+ROLE_ABSTRACT = re.compile(r'''
+    (?:                     # Match either:
+        \._?abstract        #   .abstract or ._abstract notation
+        |                   #   OR
+        role                #   role attribute
+        [ \t]*              #   optional whitespace before =
+        =                   #   equals sign
+        [ \t]*              #   optional whitespace after =
+        (['"]?)             #   group 1: optional quote (single or double)
+        _?abstract          #   "abstract" or "_abstract"
+        \1                  #   matching closing quote (if group 1 matched)
+    )
+''', re.VERBOSE | re.IGNORECASE)
+
+"""   Usage:
+  m = ROLE_ABSTRACT.search(line)
+  if m:
+      # Line contains either .abstract, ._abstract, role=abstract, or role="_abstract"
+
+  Examples that match:
+  - [.abstract] → .abstract notation
+  - [._abstract] → ._abstract notation (with underscore)
+  - [.Abstract] → case-insensitive .abstract
+  - [role=abstract] → role attribute without quotes
+  - [role="_abstract"] → role attribute with underscore
+  - [role="abstract"] → role attribute with double quotes
+  - [role='abstract'] → role attribute with single quotes
+  - [role = "abstract"] → with whitespace around =
+  - [role=ABSTRACT] → case-insensitive role value
+  - [role="Abstract"] → case-insensitive with quotes
+  - [.abstract, id="intro"] → .abstract in multi-attribute block
+
+  Does NOT match:
+  - [role="abstract] → mismatched quotes
+  - [role='abstract"] → mismatched quote types
+  - abstract → missing . or role= prefix
+  - [role=summary] → different role value     """
+
 def parse_block_attributes(line: str) -> dict[str, str]:
     """
     Parse AsciiDoc block attributes from a line like [attr1="value1", attr2=value2].

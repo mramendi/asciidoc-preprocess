@@ -279,7 +279,16 @@ class Parsed:
             return starting_state_stack
         
         # process an attribute definition
-        if regexes.ATTRIBUTE_DEFINITION.match(clean_text):
+        if (attribute_match := regexes.ATTRIBUTE_DEFINITION.match(clean_text)):
+            # check if this might define the type as procedure
+            attr_name = attribute_match.group(2).strip()
+            attr_value = attribute_match.group(3).strip()
+
+            if (attr_name.endswith("content-type")) and (attr_value.lower() == "procedure"):
+                self.is_procedure = True
+                logger.debug("PROCEDURE content type detected")
+
+            # save the attribute definition state
             line.state_stack.copy(starting_state_stack)
             line.state_stack.push(State(StateType.ATTRIBUTE_DEFINITION, StateSubtype.NORMAL))
             return starting_state_stack
@@ -296,6 +305,7 @@ class Parsed:
             rowspans = table_state.get("rowspans", {})
 
             # Find all cell boundaries, that is, unescaped indices of the separator
+            # NOTE: a double backslash does NOT escape the escaper! The code is correct in not testing for it
             cell_boundaries = [ i for i, char in enumerate(clean_text) if 
                                 char == separator and not (i>0 and clean_text[i-1]=="\\") ]
             
@@ -834,6 +844,7 @@ class Parsed:
     def __init__(self, lines: List[str]):
         self.last_original_id = -1
         self._updating_last_original_id = True
+        self.is_procedure = False
 
         self._next_line_id = 1
         self.lines = []

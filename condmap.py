@@ -201,8 +201,10 @@ class ConditionalsMap:
                 idx+=1
                 continue
 
-            # check what is in the PREVIOUS line
+            # check what is in the PREVIOUS non-blank line
             prev_line = self.parsed.previous_line(start_line)
+            while prev_line and prev_line.content.strip=="":
+                prev_line = self.parsed.previous_line(start_line)
             if prev_line: # note it might be None in case the conditional starts on line 1
                 prev_line_top_state = prev_line.state_stack.top()
                 # if it is a block attribute line - no support; 
@@ -472,14 +474,18 @@ class ConditionalsMap:
             if not breaking_boundary:
                 # normal block style conditional
                 logger.debug(f"  Classified as BLOCKS: lines {start_line.id}-{end_line_id}")
-                # walk to detect sections
+                # walk to detect:
+                # - incomplete sections
+                # - module title
+                # abstract role
+                # if procedure, predefined block titles
                 start_idx = self.parsed.index(start_line)
                 end_idx = self.parsed.index(end_line)
-                idx = start_idx
+                check_idx = start_idx
                 failout = False
                 section_level = -2 # -2 not yet detected, -1 not a section, otherwise level
-                while idx <= end_idx:
-                    line = self.parsed.lines[idx]
+                while check_idx <= end_idx:
+                    line = self.parsed.lines[check_idx]
                     if section_level == -2:
                         if line.content.strip() != "":
                             if not line.state_stack.top().type in [StateType.CONDITIONAL, 
@@ -495,7 +501,10 @@ class ConditionalsMap:
                                         section_level = line.state_stack.top().get("level")
                                     else:
                                         section_level = -1
-                                    # we continue processing this line normally
+                                    # we continue processing this line normally, but we check if the main title is caught
+                                    if section_level == 1:
+                                        failout = True
+                                        logger.error(f"UNSUPPORTED: conditional at lines {start_line.id}-{end_line_id} includes the module title")
 
                     if line.state_stack.top().type == StateType.SECTION_HEADER:
                         if section_level == -1:
@@ -516,22 +525,37 @@ class ConditionalsMap:
                                       failout = True
                                       logger.error(f"BUG: error processing section header at line {line.id}")
 
-                            #logger.warning(f"Section header conditioned at line {line.id} - result is uncertain!")
-                    
-                    idx += 1
+                    if line.state_stack.top().type == StateType.BLOCK_PREFIX:
+                        if line.state_stack.top().subtype == StateSubtype.BLOCK_ATTRIBUTES:
+                            # check for abstract
+                            if regexes.ROLE_ABSTRACT.search(line.content):
+                                failout = True
+                                logger.error(f"UNSUPPORTED: conditional at lines {start_line.id}-{end_line_id} includes a short description")
+                        if line.state_stack.top().subtype == StateSubtype.BLOCK_TITLE and self.parsed.is_procedure:
+                            # check for disallowed fixed block titles in a procedure
+                            block_title_lower = line.content.strip().strip(".").lower()
+                            if block_title_lower in ["prerequisites","prerequisite","procedure", "verification",
+                                                     "results","result","troubleshooting","troubleshooting steps",
+                                                     "troubleshooting step","next steps", "next step","additional resources"]:
+                                failout = True
+                                logger.error(f"UNSUPPORTED: conditional at lines {start_line.id}-{end_line_id} includes a fixed procedure header: {line.content.strip()}")
+
+                    check_idx += 1
 
 
                 if failout:
-                    # just skip past the end
-                    idx = self.parsed.index(end_line)+1
+                    # mark as unsupported but continue processing to handle nested conditionals
+                    end_ids_unsupported.add(end_line_id)
+                    idx += 1
                     continue
+
                 else:
                     cond = Conditional(type = ConditionalType.BLOCKS,
                                         start_id = start_line.id,
                                         end_id = end_line_id,
                                         values = condition_values)
                     self.conditionals.append(cond)
-                    self._warn_about_nested(first_line, last_line)
+                    end_ids_unsupported |= self._warn_about_nested(first_line, last_line)
                     idx = self.parsed.index(end_line)+1
                     continue
 
