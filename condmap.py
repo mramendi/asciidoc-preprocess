@@ -119,7 +119,8 @@ class ConditionalsMap:
             if operator == "ifeval":
                 logger.debug(f"  Skipping ifeval (unsupported)")
                 logger.error(f"UNSUPPORTED: ifeval condition, line {start_line.id}")
-                end_ids_unsupported.add(end_line_id)
+                if (end_line_id := top_state.get("end_line")):
+                    end_ids_unsupported.add(end_line_id)
                 idx+=1
                 continue
 
