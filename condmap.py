@@ -5,6 +5,7 @@ from enum import Enum, auto
 from dataclasses import dataclass
 import logging
 import regexes
+from condlogger import CondLogger, Severity
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +30,11 @@ class Conditional:
 
 class ConditionalsMap:
     conditionals: List[Conditional] = [] # type hint for IDE
-    def __init__(self, parsed: Parsed, values: Set[str]):
+    def __init__(self, parsed: Parsed, values: Set[str], cond_logger:CondLogger):
         self.parsed = parsed
         self.conditionals = []
         self.values = values # IMPORTANT: if values == None, we are linting
+        self.cond_logger = cond_logger
         self._make_map()
 
     def pretty(self) -> str:
@@ -62,9 +64,9 @@ class ConditionalsMap:
         idx = start_idx
         while idx <= end_idx:
             line = self.parsed.lines[idx]
-            if (line.state_stack.top().type == StateType.CONDITIONAL and 
+            if (line.state_stack.top().type == StateType.CONDITIONAL and
                 line.state_stack.top().subtype != StateSubtype.END):
-                logger.error(f"UNSUPPORTED: Conditional at line {line.id} is nested")
+                self.cond_logger.log(Severity.UNSUPPORTED, line.id, None, "Conditional is nested")
                 if line.state_stack.top().subtype != StateSubtype.SINGLE_LINE:
                     result.add(line.state_stack.top().get("end_line"))
             # TODO cover supported and unsupported sections properly
@@ -96,7 +98,7 @@ class ConditionalsMap:
             delim_state = start_line.state_stack.top_by_type(StateType.DELIMITED_BLOCK)
             if delim_state:
                 if delim_state.subtype == StateSubtype.VERBATIM:
-                    logger.error(f"UNSUPPORTED: conditional inside a verbatim block or an unsupported table, line {start_line.id}")
+                    self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "conditional inside a verbatim block or an unsupported table")
                     if ( end_id := top_state.get("end_line") ):
                         end_ids_unsupported.add(end_id)
                     idx+=1
@@ -108,7 +110,7 @@ class ConditionalsMap:
             if top_state.subtype == StateSubtype.END:
                 if not start_line.id in end_ids_unsupported:
                     logger.debug(f"  Unmatched END conditional")
-                    logger.error(f"UNSUPPORTED: endif encountered with no pair, line {start_line.id}")
+                    self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "endif encountered with no pair")
                 else:
                     logger.debug(f"  Skipping END of unsupported conditional")
                 idx+=1
@@ -118,7 +120,7 @@ class ConditionalsMap:
             operator = top_state.get("operator")
             if operator == "ifeval":
                 logger.debug(f"  Skipping ifeval (unsupported)")
-                logger.error(f"UNSUPPORTED: ifeval condition, line {start_line.id}")
+                self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "ifeval condition")
                 if (end_line_id := top_state.get("end_line")):
                     end_ids_unsupported.add(end_line_id)
                 idx+=1
@@ -128,7 +130,7 @@ class ConditionalsMap:
             expression = top_state.get("expression")
             if not expression:
                 logger.debug(f"  Skipping (no expression)")
-                logger.error(f"UNSUPPORTED: could not get the expression for ifdef/endif, line {start_line.id}")
+                self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "could not get the expression for ifdef/endif")
                 end_ids_unsupported.add(end_line_id)
                 idx+=1
                 continue
@@ -136,7 +138,7 @@ class ConditionalsMap:
             logger.debug(f"  Processing {operator}::{expression}[], line {start_line.id}")
             # if a + is used: we don't support this logic currently
             if "+" in expression:
-                logger.error(f"UNSUPPORTED: ifdef/ifndef expression using + , line {start_line.id}")
+                self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "ifdef/ifndef expression using +")
                 end_ids_unsupported.add(end_line_id)
                 idx+=1
                 continue
@@ -145,7 +147,7 @@ class ConditionalsMap:
             condition_values=set([attr.strip() for attr in expression.split(",") if attr.strip()])
             # unless we are linting, check that values are supported
             if self.values and not condition_values.issubset(self.values):
-                logger.error(f"UNSUPPORTED: ifdef/ifndef expression {expression} uses undefined value, line {start_line.id}")
+                self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, f"ifdef/ifndef expression {expression} uses undefined value")
                 end_ids_unsupported.add(end_line_id)
                 idx+=1
                 continue
@@ -157,7 +159,7 @@ class ConditionalsMap:
             if top_state.subtype == StateSubtype.SINGLE_LINE:
 
                 logger.debug(f"SINGLE_LINE conditional")
-                logger.warning(f"DISCOURAGED: Single-line conditional, line {start_line.id}")
+                self.cond_logger.log(Severity.DISCOURAGED, start_line.id, None, "Single-line conditional")
                 cond = Conditional(type = ConditionalType.SINGLE_LINE,
                     start_id = start_line.id,
                     end_id = start_line.id,
@@ -171,7 +173,7 @@ class ConditionalsMap:
             # subtype is START at this point, so an end line should be present
             end_line_id = top_state.get("end_line")
             if (end_line_id is None) or (end_line_id == -1):
-                logger.error(f"conditional with no endif line found - skipped, line {start_line.id}")
+                self.cond_logger.log(Severity.FORMAT, start_line.id, None, "conditional with no endif line found - skipped")
                 idx += 1
                 continue
             end_line = self.parsed.line_by_id(end_line_id)
@@ -197,7 +199,7 @@ class ConditionalsMap:
 
             if blocks_differ:
                 logger.debug(f"  Skipping (crosses delimited block boundary)")
-                logger.error(f"UNSUPPORTED: lines {start_line.id} and {end_line_id} are in different delimited block positions")
+                self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, end_line_id, "lines are in different delimited block positions")
                 end_ids_unsupported.add(end_line_id)
                 idx+=1
                 continue
@@ -212,14 +214,14 @@ class ConditionalsMap:
                 #  for a block title line it is only "no support" if the first line starts a block
                 if prev_line_top_state.type == StateType.BLOCK_PREFIX:
                     if prev_line_top_state.subtype == StateSubtype.BLOCK_ATTRIBUTES:
-                        logger.error(f"UNSUPPORTED: [Block attributes] immediately before conditional at line {start_line.id}")
+                        self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "[Block attributes] immediately before conditional")
                         end_ids_unsupported.add(end_line_id)
                         idx+=1
                         continue
                     if prev_line_top_state.subtype == StateSubtype.BLOCK_TITLE:
                         next_line = self.parsed.next_line(start_line)
                         if next_line.state_stack.top().type == StateType.DELIMITED_BLOCK:
-                            logger.error(f"UNSUPPORTED:Conditional cuts .BlockTitle off delimited block at line {start_line.id}")
+                            self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "Conditional cuts .BlockTitle off delimited block")
                             end_ids_unsupported.add(end_line_id)
                             idx+=1
                             continue
@@ -227,7 +229,7 @@ class ConditionalsMap:
             # get the first and last lines within the conditioned block, first check for empty
             first_line = self.parsed.next_line(start_line)
             if first_line == end_line:
-                logger.error(f"UNSUPPORTED: Empty conditional at line {start_line.id}")
+                self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "Empty conditional")
                 # just skip past the end
                 idx = self.parsed.index(end_line)+1
                 continue
@@ -236,7 +238,7 @@ class ConditionalsMap:
             failout = False
             while True:
                 if (not first_line) or (first_line.id == end_line.id):
-                    logger.error(f"UNSUPPORTED: Conditional with no content at line {start_line.id}")
+                    self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "Conditional with no content")
                     failout = True
                     break
                 if not first_line.state_stack.top().type in [StateType.CONDITIONAL, 
@@ -257,7 +259,7 @@ class ConditionalsMap:
             failout = False
             while True:
                 if (not first_non_blank_line) or (first_non_blank_line.id == end_line.id):
-                    logger.error(f"UNSUPPORTED: Conditional with no content except blank lines at line {start_line.id}")
+                    self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "Conditional with no content except blank lines")
                     failout = True
                     break
                 if first_non_blank_line.content.strip() != "":
@@ -286,7 +288,7 @@ class ConditionalsMap:
             last_non_blank_line = last_line
             while last_non_blank_line.content.strip() == "":
                 if last_non_blank_line == first_line:
-                    logger.error(f"UNSUPPORTED: Conditional of blanks at line {start_line.id}")
+                    self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "Conditional of blanks")
                     # just skip past the end
                     idx = self.parsed.index(end_line)+1
                     continue
@@ -349,7 +351,7 @@ class ConditionalsMap:
                     idx = self.parsed.index(end_line)+1
                     continue
                 else:
-                    logger.error(f"UNSUPPORTED: Conditional in a table that does not contain only whole rows, line {start_line.id}")
+                    self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "Conditional in a table that does not contain only whole rows")
                     end_ids_unsupported.add(end_line_id)
                     idx+=1
                     continue 
@@ -367,7 +369,7 @@ class ConditionalsMap:
                  # this works as a partial if the last non-blank line has the exact same state
                  if first_line.state_stack == last_non_blank_line.state_stack :
                     logger.debug(f"  Classified as PARTIAL: lines {start_line.id}-{end_line_id}")
-                    logger.warning(f"DISCOURAGED: conditionalized lines are a part of a paragraph/block, lines {start_line.id}-{end_line_id}")
+                    self.cond_logger.log(Severity.DISCOURAGED, start_line.id, end_line_id, "conditionalized lines are a part of a paragraph/block")
                     cond = Conditional(type = ConditionalType.PARTIAL,
                                         start_id = start_line.id,
                                         end_id = end_line_id,
@@ -377,7 +379,7 @@ class ConditionalsMap:
                     idx = self.parsed.index(end_line)+1
                     continue
                  else:
-                    logger.error(f"UNSUPPORTED: Conditional starts mid-paragraph/list item and includes several items, line {start_line.id}")
+                    self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "Conditional starts mid-paragraph/list item and includes several items")
                     end_ids_unsupported.add(end_line_id)
                     idx+=1
                     continue 
@@ -442,7 +444,7 @@ class ConditionalsMap:
                     type = ConditionalType.PART_START_LIST_ITEM
 
                 logger.debug(f"  Classified as {type.name}: lines {start_line.id}-{end_line_id}")
-                logger.warning(f"DISCOURAGED: conditionalized lines are a part of a list item, lines {start_line.id}-{end_line_id}")
+                self.cond_logger.log(Severity.DISCOURAGED, start_line.id, end_line_id, "conditionalized lines are a part of a list item")
                 cond = Conditional(type = type,
                     start_id = start_line.id,
                     end_id = end_line_id,
@@ -505,15 +507,15 @@ class ConditionalsMap:
                                     # we continue processing this line normally, but we check if the main title is caught
                                     if section_level == 1:
                                         failout = True
-                                        logger.error(f"UNSUPPORTED: conditional at lines {start_line.id}-{end_line_id} includes the module title")
+                                        self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, end_line_id, "conditional includes the module title")
 
                     if line.state_stack.top().type == StateType.SECTION_HEADER:
                         if section_level == -1:
                             failout = True
-                            logger.error(f"UNSUPPORTED: conditional at lines {start_line.id}-{end_line_id} includes a section header at line {line.id} but does not start with a section header")
+                            self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, end_line_id, f"includes a section header at line {line.id} but does not start with a section header")
                         elif line.state_stack.top().get("level") < section_level:
                             failout = True
-                            logger.error(f"UNSUPPORTED: conditional at lines {start_line.id}-{end_line_id} includes a section header at line {line.id} but start with a section header of a higher level")
+                            self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, end_line_id, f"includes a section header at line {line.id} but start with a section header of a higher level")
                         else:
                             # this is a valid conditioned section IF it fits inside the conditionalized part entirely
                             cond_end_line_id = line.state_stack.top().get("end_line")
@@ -521,17 +523,17 @@ class ConditionalsMap:
                                 comparison = self.parsed.compare_positions(cond_end_line_id,end_line)
                                 if comparison > 0:
                                     failout = True
-                                    logger.error(f"UNSUPPORTED: conditional at lines {start_line.id}-{end_line_id} includes a section header at line {line.id} and the section is not fully inside the conditional")
+                                    self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, end_line_id, f"includes a section header at line {line.id} and the section is not fully inside the conditional")
                             except Exception as e:
                                       failout = True
-                                      logger.error(f"BUG: error processing section header at line {line.id}")
+                                      self.cond_logger.log(Severity.BUG, line.id, None, "error processing section header")
 
                     if line.state_stack.top().type == StateType.BLOCK_PREFIX:
                         if line.state_stack.top().subtype == StateSubtype.BLOCK_ATTRIBUTES:
                             # check for abstract
                             if regexes.ROLE_ABSTRACT.search(line.content):
                                 failout = True
-                                logger.error(f"UNSUPPORTED: conditional at lines {start_line.id}-{end_line_id} includes a short description")
+                                self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, end_line_id, "conditional includes a short description")
                         if line.state_stack.top().subtype == StateSubtype.BLOCK_TITLE and self.parsed.is_procedure:
                             # check for disallowed fixed block titles in a procedure
                             block_title_lower = line.content.strip().strip(".").lower()
@@ -539,7 +541,7 @@ class ConditionalsMap:
                                                      "results","result","troubleshooting","troubleshooting steps",
                                                      "troubleshooting step","next steps", "next step","additional resources"]:
                                 failout = True
-                                logger.error(f"UNSUPPORTED: conditional at lines {start_line.id}-{end_line_id} includes a fixed procedure header: {line.content.strip()}")
+                                self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, end_line_id, f"conditional includes a fixed procedure header: {line.content.strip()}")
 
                     check_idx += 1
 
@@ -567,7 +569,7 @@ class ConditionalsMap:
                 if last_line_top_state.type == StateType.PARAGRAPH:
                     if last_line_top_state.get("start_line") == first_line_top_state.get("start_line"):
                         logger.debug(f"  Classified as PARTIAL (paragraph start): lines {start_line.id}-{end_line_id}")
-                        logger.warning(f"DISCOURAGED: conditionalized lines are a part of a paragraph/block, lines {start_line.id}-{end_line_id}")
+                        self.cond_logger.log(Severity.DISCOURAGED, start_line.id, end_line_id, "conditionalized lines are a part of a paragraph/block")
 
                         cond = Conditional(type = ConditionalType.PARTIAL,
                             start_id = start_line.id,
@@ -580,7 +582,7 @@ class ConditionalsMap:
 
             # if we reach this place, the conditional is not supported
             logger.debug(f"  Skipping (breaks boundary, includes multiple items)")
-            logger.error(f"UNSUPPORTED: Conditional ends mid-paragraph/list item and includes several items, line {start_line.id}")
+            self.cond_logger.log(Severity.UNSUPPORTED, start_line.id, None, "Conditional ends mid-paragraph/list item and includes several items")
             end_ids_unsupported.add(end_line_id)
             idx+=1
             continue 

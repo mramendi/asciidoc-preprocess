@@ -10,6 +10,24 @@ This preprocessor enables you to maintain a single AsciiDoc source file that con
 
 The `--lint` option lets you check which conditionals in the source are unsupported or discouraged.
 
+An API is available for linting:
+
+```python
+from preprocess_conditionals import lint_file
+linting_result = lint_file("filename.adoc")
+```
+
+The returned value is a list of dicts, each dict contains the following keys:
+
+* `"severity"`: `"UNSUPPORTED"`, `"DISCOURAGED"`, `"FORMAT"`, or `"BUG"`. A `"FATAL"` value exists but is at present not used. BUG means an internal processing error; FORMAT means an Asciidoc error (or something the preprocessor perceives as an Asciidoc error); UNSUPPORTED and DISCOURAGED relate to conditionals.
+
+* `"start_line"`: number of the start line of the conditional (the first line is number 1) or the input line where a format/bug issue has happened
+
+* `"end_line"`: number of the end line of the conditional, **not always present**
+
+* `"message"`: the error/warning message
+
+
 ### What It Does
 
 **Before preprocessing:**

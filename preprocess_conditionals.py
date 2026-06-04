@@ -9,7 +9,8 @@ import argparse
 from lineparser import Parsed
 from line_types import Line, State, StateType, StateSubtype, StateStack
 from condmap import ConditionalsMap, ConditionalType
-from typing import Set
+from typing import Set, List, Dict
+from condlogger import CondLogger
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +342,26 @@ def remove_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                 parsed.remove_by_id(id)
 
 
+def lint_file(input_file: str) -> List[Dict]:
+    """
+    Lint a file and return the messages as a list of dicts
+    """    
+    cond_logger = CondLogger(input_file, False)
+
+    # Read input file - no exception handling - a not found exception gets propagated to caller
+    with open(input_file, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    # Parse the document
+    parsed = Parsed(lines,cond_logger)
+
+    # Create conditionals map
+    cond_map = ConditionalsMap(parsed, None, cond_logger)
+
+    return cond_logger.entries
+
+
+
 def main():
     parser = argparse.ArgumentParser(description="Preprocess AsciiDoc files to handle conditional directives")
     parser.add_argument("input_file", help="Input AsciiDoc file")
@@ -375,6 +396,8 @@ def main():
     input_file = args.input_file
     output_file = args.output_file
 
+    cond_logger = CondLogger(input_file, True)
+
     # Read list file and create values set (skip in lint mode)
     if args.lint:
         values = None
@@ -390,6 +413,12 @@ def main():
             print(f"Error reading list file: {e}", file=sys.stderr)
             sys.exit(1)
 
+    if args.lint:
+        print(f"Lint mode: processing {input_file}")
+    else:
+        print(f"Processing {input_file} -> {output_file}")
+
+
     # Read input file
     try:
         with open(input_file, 'r', encoding='utf-8') as f:
@@ -402,10 +431,10 @@ def main():
         sys.exit(1)
 
     # Parse the document
-    parsed = Parsed(lines)
+    parsed = Parsed(lines,cond_logger)
 
     # Create conditionals map
-    cond_map = ConditionalsMap(parsed, values)
+    cond_map = ConditionalsMap(parsed, values, cond_logger)
 
     # Write debug output if requested
     if args.debug_output:
@@ -421,7 +450,6 @@ def main():
 
     # Skip processing in lint mode
     if args.lint:
-        print(f"Lint mode: analyzed {input_file}")
         return
 
     # Process conditionals

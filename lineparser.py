@@ -4,6 +4,8 @@ import logging
 import re
 import regexes
 from regexes import DelimiterType, DelimiterInfo
+from condlogger import CondLogger,Severity
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,7 @@ class Parsed:
     def _original_text_processed(self):
         self._updating_last_original_id = False
         if self._next_line_id > self.ADDED_LINE_START:
-            logger.warning(f"maximum line id is {self._next_line_id-1}, did not jump line ID")
+            self.cond_logger.log(Severity.BUG,self._next_line_id-1,None,"Maximum line ID too big, did not jump")
         else:
             self._next_line_id = self.ADDED_LINE_START
 
@@ -187,7 +189,6 @@ class Parsed:
                                            StateType.SECTION_HEADER, StateType.IN_TABLE] or
                top_starting_state.subtype == StateSubtype.JOINER):
                  raise ValueError(f"Invalid top state passed to parse_line: {top_starting_state}")
-                  
         # create the Line object and add it to the lines list
         clean_text = content.replace("\n","")
         line = self.create_line(clean_text)
@@ -220,7 +221,7 @@ class Parsed:
                         break
                 else:
                     # No matching start found
-                    logger.warning(f"endif without matching ifdef/ifndef/ifeval on line {line.id}")
+                    self.cond_logger.log(Severity.FORMAT, line.id, None, "endif without matching ifdef/ifndef/ifeval")
             elif operator in ["ifdef", "ifndef"] and expression_before.strip() and expression_inside.strip():
                 # Single-line conditional: has content both before and inside []
                 subtype = StateSubtype.SINGLE_LINE
@@ -529,7 +530,7 @@ class Parsed:
                         new_attribs = regexes.parse_block_attributes(walk_line.content.strip())
                         for attrib in new_attribs:
                             if attrib in table_attribs:
-                                logger.info(f"Attribute {attrib} defined twice for table on line {line.id} - parsing might be unreliable")
+                                self.cond_logger.log(Severity.FORMAT, line.id, None, f"Attribute {attrib} defined twice for table - parsing might be unreliable")
                             else:
                                 table_attribs[attrib] = new_attribs[attrib]
                         # continue walking as there might be more than one block attributes line
@@ -571,7 +572,7 @@ class Parsed:
                 result_state_stack.push(State(StateType.DELIMITED_BLOCK, StateSubtype.TABLE_SUPPORTED, block_param))
                 return result_state_stack
             else:
-                logger.warning(f"Unknown delimiter type at line {line.id} - not processed properly")
+                self.cond_logger.log(Severity.BUG, line.id, None, "Unknown delimiter type - not processed properly")
                 return starting_state_stack
 
 
@@ -623,7 +624,7 @@ class Parsed:
                 starting_state_stack.top().subtype != StateSubtype.TERMINATED):
                 # Warn if we're already in a joined state
                 if starting_state_stack.top().subtype == StateSubtype.JOINED_FIRST_LINE:
-                    logger.warning(f"+ continuation marker immediately after another + on line {line.id}")
+                    self.cond_logger.log(Severity.FORMAT, line.id, None, "+ continuation marker immediately after another +")
 
                 # The + line gets marked with JOINER subtype
                 result_state_stack = starting_state_stack.duplicate()
@@ -641,7 +642,7 @@ class Parsed:
                 return result_state_stack
             # If not in list item context, fall through to treat as regular content
             else:
-                logger.warning(f"single + is not a valid joiner, line {line.id}")
+                self.cond_logger.log(Severity.FORMAT, line.id, None, "single + is not a valid joiner")
 
         # Block attribute line
         if clean_text.startswith("[") and clean_text.endswith("]"):
@@ -761,7 +762,7 @@ class Parsed:
                 new_state_stack = starting_state_stack.duplicate()
             if new_state_stack:
                 if new_state_stack.top().type == StateType.DELIMITED_BLOCK:
-                    logger.warning(f"DISCOURAGED: Section title inside delimited block on line {line.id} - sections can be counted inaccurately")
+                    self.cond_logger.log(Severity.DISCOURAGED, line.id, None, "Section title inside delimited block - sections can be counted inaccurately")
 
                 # Walk backwards to find section end boundary and close previous sections
                 # First, find the first non-blank, non-comment, non-attribute-block, non-conditional line
@@ -841,10 +842,11 @@ class Parsed:
         result_state_stack.push(next_line_paragraph_state)
         return result_state_stack
 
-    def __init__(self, lines: List[str]):
+    def __init__(self, lines: List[str], cond_logger:CondLogger):
         self.last_original_id = -1
         self._updating_last_original_id = True
         self.is_procedure = False
+        self.cond_logger = cond_logger
 
         self._next_line_id = 1
         self.lines = []
