@@ -14,6 +14,7 @@ class StateType(Enum):
     SECTION_HEADER = auto()
     LINE_COMMENT = auto()
     ATTRIBUTE_DEFINITION = auto()
+    IN_TABLE = auto()  # Table row/column tracking
 
 
 class StateSubtype(Enum):
@@ -27,6 +28,8 @@ class StateSubtype(Enum):
 
     # For DELIMITED_BLOCK only
     VERBATIM = auto()
+    TABLE_SUPPORTED = auto()  # Table block (parseable tables)
+    TABLE_UNSUPPORTED = auto()  # Table block (non-parseable tables)
 
     # For most types
     NORMAL = auto()
@@ -45,6 +48,11 @@ class StateSubtype(Enum):
     BLOCK_TITLE = auto()
     BLOCK_ATTRIBUTES = auto()
 
+    # For IN_TABLE only
+    ROW_BOUNDARY = auto()  # Line contains a row boundary
+    CELL_BOUNDARY = auto()  # Line contains cell delimiters but no row boundary
+    IN_CELL = auto()  # Line fully inside a cell (no delimiters)
+
 
 
 # Validation mapping: which subtypes are valid for which types
@@ -52,7 +60,9 @@ VALID_SUBTYPES: Dict[StateType, Set[StateSubtype]] = {
     StateType.DELIMITED_BLOCK: {
         StateSubtype.START, StateSubtype.END,
         StateSubtype.VERBATIM,
-        StateSubtype.NORMAL
+        StateSubtype.NORMAL,
+        StateSubtype.TABLE_SUPPORTED,  # Parseable table blocks - currently only PSV
+        StateSubtype.TABLE_UNSUPPORTED
     },
     StateType.PARAGRAPH: {
         StateSubtype.NORMAL,
@@ -83,6 +93,11 @@ VALID_SUBTYPES: Dict[StateType, Set[StateSubtype]] = {
     },
     StateType.ATTRIBUTE_DEFINITION: {
         StateSubtype.NORMAL
+    },
+    StateType.IN_TABLE: {
+        StateSubtype.ROW_BOUNDARY,
+        StateSubtype.CELL_BOUNDARY,
+        StateSubtype.IN_CELL
     },
 }
 

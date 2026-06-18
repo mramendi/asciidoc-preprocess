@@ -6,10 +6,11 @@ Preprocess AsciiDoc files to handle conditional directives.
 import sys
 import logging
 import argparse
-from parser import Parsed
+from lineparser import Parsed
 from line_types import Line, State, StateType, StateSubtype, StateStack
 from condmap import ConditionalsMap, ConditionalType
-from typing import Set
+from typing import Set, List, Dict
+from condlogger import CondLogger
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,20 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
         cond = cond_map.conditionals[idx]
         logger.debug(f"Processing conditional {idx}: {cond.type.name}, lines {cond.start_id}-{cond.end_id}, values: {', '.join(sorted(cond.values))}")
 
+        # single line conditional is its own thing - subsequent logic does not apply to it so process it first
+        if cond.type == ConditionalType.SINGLE_LINE:
+            if cond.start_id != cond.end_id:
+                raise RuntimeError(f"SINGLE_LINE conditional but start/end not equal, line {cond.start_id}")
+            cond_line = parsed.line_by_id(cond.start_id)
+            conditioned_content = cond_line.state_stack.top().get("content")
+
+            if not conditioned_content:
+                raise RuntimeError(f"SINGLE_LINE conditional but no parsed content, line {cond.start_id}")
+            cond_line.content = "["+dotroles(cond.values)+"]#"+conditioned_content+"#"
+            idx += 1
+            continue
+            
+
         first_line = parsed.next_line(parsed.line_by_id(cond.start_id))
         last_line = parsed.previous_line(parsed.line_by_id(cond.end_id))
 
@@ -53,6 +68,32 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
             logger.debug(f"  Branch: PARTIAL - adding inline roles")
             first_line.prepend("["+dotroles(cond.values)+"]#")
             last_line.append("#")
+        elif cond.type == ConditionalType.TABLE_ROWS:
+            logger.debug(f"  Branch: TABLE_ROWS - adding stubs to each row start")
+
+            # get the separator
+            delim_state = first_line.state_stack.top_by_type(StateType.DELIMITED_BLOCK)
+            separator = delim_state.get("separator")
+            if not separator:
+                raise RuntimeError(f"TABLE_ROWS conditional fails to find separator, line {cond.start_id}")
+
+            logger.debug(f"    Separator: '{separator}'")
+
+            # find the row starts and add the slug after the first separator
+            current_line = first_line
+            while parsed.compare_positions(current_line, last_line) <= 0:
+                logger.debug(f"    Processing line {current_line.id}: {current_line.state_stack.top().type}/{current_line.state_stack.top().subtype}")
+                if ((current_line.state_stack.top().type,current_line.state_stack.top().subtype) ==
+                             (StateType.IN_TABLE,StateSubtype.ROW_BOUNDARY)):
+
+                    pos_separator = current_line.content.find(separator)
+                    logger.debug(f"      Found ROW_BOUNDARY at line {current_line.id}, separator pos: {pos_separator}")
+                    content_upto_separator = current_line.content[:pos_separator+1]
+                    content_after_separator = current_line.content[pos_separator+1:]
+                    current_line.content = content_upto_separator+"["+dotroles(cond.values)+"]#{empty}# "+content_after_separator
+                    logger.debug(f"      Modified to: {current_line.content}")
+                current_line=parsed.next_line(current_line)
+
         elif cond.type == ConditionalType.PART_START_LIST_ITEM:
             logger.debug(f"  Branch: PART_START_LIST_ITEM - adding inline roles to partial list item")
             marker = first_line.state_stack.top().get("marker")
@@ -268,10 +309,16 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
 
 
                 elif current_line_top_state.type == StateType.SECTION_HEADER:
-                    logger.debug(f"    Line {current_line.id}: SECTION_HEADER - creating block attributes (uncertain result)")
-                    # we already warned the user this might get unpredictable
-                    # now we just create the block attributes
+                    logger.debug(f"    Line {current_line.id}: SECTION_HEADER - creating block attributes, skipping section")
                     parsed.create_line_before(current_line, "["+attroles(cond.values)+"]")
+                    section_end_line_id = current_line_top_state.get("end_line")
+                    if not section_end_line_id:
+                        logger.warning(f"Section end not found from line {current_line.id}, results can be unpredictable")
+                    else:
+                        section_end_line = parsed.line_by_id(section_end_line_id)
+                        current_line = parsed.next_line(section_end_line)
+                        continue # immediately continue the loop as we jumped over the section
+
                 else:
                     logger.debug(f"    Line {current_line.id}: Other type ({current_line_top_state.type.name}) - consuming block attributes if content line")
                     # consume block attributes unless the line is blank or non-text
@@ -290,14 +337,35 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
 
 def remove_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
     for cond in cond_map.conditionals:
-        for id in [cond.start_id, cond.end_id]:
-            parsed.remove_by_id(id)
+        if cond.type != ConditionalType.SINGLE_LINE: # single line conditionals don't have separate conditional statement lines
+            for id in [cond.start_id, cond.end_id]:
+                parsed.remove_by_id(id)
+
+
+def lint_file(input_file: str) -> List[Dict]:
+    """
+    Lint a file and return the messages as a list of dicts
+    """    
+    cond_logger = CondLogger(input_file, False)
+
+    # Read input file - no exception handling - a not found exception gets propagated to caller
+    with open(input_file, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    # Parse the document
+    parsed = Parsed(lines,cond_logger)
+
+    # Create conditionals map
+    cond_map = ConditionalsMap(parsed, None, cond_logger)
+
+    return cond_logger.entries
+
 
 
 def main():
     parser = argparse.ArgumentParser(description="Preprocess AsciiDoc files to handle conditional directives")
     parser.add_argument("input_file", help="Input AsciiDoc file")
-    parser.add_argument("output_file", help="Output file")
+    parser.add_argument("output_file", nargs='?', help="Output file (not used in lint mode)")
     parser.add_argument("--list",
                        default="conditionals.lst",
                        help="List file containing conditional values (default: conditionals.lst)")
@@ -305,10 +373,19 @@ def main():
                        help="Debug output file for pretty-printed parse and conditional info")
     parser.add_argument("--log-level",
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                       default='WARNING',
-                       help="Set the logging level (default: WARNING)")
+                       default='INFO',
+                       help="Set the logging level (default: INFO)")
+    parser.add_argument("-l", "--lint",
+                       action="store_true",
+                       help="Lint mode: check conditionals without processing (no output file needed)")
 
     args = parser.parse_args()
+
+    # Validate arguments
+    if not args.lint and not args.output_file:
+        parser.error("output_file is required unless --lint mode is used")
+    if args.lint and args.output_file:
+        parser.error("output_file should not be specified in --lint mode")
 
     # Configure logging
     logging.basicConfig(
@@ -318,18 +395,29 @@ def main():
 
     input_file = args.input_file
     output_file = args.output_file
-    list_file = args.list
 
-    # Read list file and create values set
-    try:
-        with open(list_file, 'r', encoding='utf-8') as f:
-            values = set(line.strip() for line in f if line.strip())
-    except FileNotFoundError:
-        print(f"Error: List file '{list_file}' not found", file=sys.stderr)
-        sys.exit(1)
-    except IOError as e:
-        print(f"Error reading list file: {e}", file=sys.stderr)
-        sys.exit(1)
+    cond_logger = CondLogger(input_file, True)
+
+    # Read list file and create values set (skip in lint mode)
+    if args.lint:
+        values = None
+    else:
+        list_file = args.list
+        try:
+            with open(list_file, 'r', encoding='utf-8') as f:
+                values = set(line.strip() for line in f if line.strip())
+        except FileNotFoundError:
+            print(f"Error: List file '{list_file}' not found", file=sys.stderr)
+            sys.exit(1)
+        except IOError as e:
+            print(f"Error reading list file: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.lint:
+        print(f"Lint mode: processing {input_file}")
+    else:
+        print(f"Processing {input_file} -> {output_file}")
+
 
     # Read input file
     try:
@@ -343,10 +431,10 @@ def main():
         sys.exit(1)
 
     # Parse the document
-    parsed = Parsed(lines)
+    parsed = Parsed(lines,cond_logger)
 
     # Create conditionals map
-    cond_map = ConditionalsMap(parsed, values)
+    cond_map = ConditionalsMap(parsed, values, cond_logger)
 
     # Write debug output if requested
     if args.debug_output:
@@ -359,6 +447,10 @@ def main():
         except IOError as e:
             print(f"Error writing debug output file: {e}", file=sys.stderr)
             sys.exit(1)
+
+    # Skip processing in lint mode
+    if args.lint:
+        return
 
     # Process conditionals
     process_conditionals(parsed, cond_map)
