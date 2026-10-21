@@ -78,7 +78,11 @@ Options:
   --list FILE            List file containing conditional values (default: conditionals.lst)
   --debug-output FILE    Write debug information to FILE (includes parse tree and conditional map)
   --log-level LEVEL      Set logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: WARNING)
+  --attribute ATTRIBUTE  The DITA attribute which is targeted, defailt is otherprops.
 ```
+
+**IMPORTANT:** The code does **not** check the validity of the attribute name. Make sure you pass a valid DITA attribute name such as
+product or platform if you use `--attribute`.
 
 ### List File Format
 

@@ -13,17 +13,17 @@ from typing import Set
 
 logger = logging.getLogger(__name__)
 
-ATTRIBUTE = "otherprops"
+DEFAULT_ATTRIBUTE = "otherprops"
 
-def dotroles(values: Set[str]) -> str:
-    return ' '.join(["."+ATTRIBUTE+":"+x for x in values])
+def dotroles(values: Set[str], attribute: str) -> str:
+    return ' '.join(["."+attribute+":"+x for x in values])
 
-def attroles(values: Set[str]) -> str:
-    return 'role="'+' '.join([ATTRIBUTE+":"+x for x in values])+'"'
+def attroles(values: Set[str], attribute: str) -> str:
+    return 'role="'+' '.join([attribute+":"+x for x in values])+'"'
 
 
 
-def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
+def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap, attribute: str = DEFAULT_ATTRIBUTE):
 
     def is_in_list(state_stack: StateStack, list_start_line: int, except_first_line: bool = False):
         """Determine if a state stack includes the list with the given start line ID at any level.
@@ -51,7 +51,7 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
 
         if cond.type == ConditionalType.PARTIAL:
             logger.debug(f"  Branch: PARTIAL - adding inline roles")
-            first_line.prepend("["+dotroles(cond.values)+"]#")
+            first_line.prepend("["+dotroles(cond.values, attribute)+"]#")
             last_line.append("#")
         elif cond.type == ConditionalType.PART_START_LIST_ITEM:
             logger.debug(f"  Branch: PART_START_LIST_ITEM - adding inline roles to partial list item")
@@ -59,7 +59,7 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
             if not marker:
                 raise RuntimeError(f"Classified as PART_START_LIST_ITEM but no marker found in state, line {first_line.id}")
             content_after_marker = first_line.content[len(marker)+1:] # remove marker and space after it
-            first_line.content = marker+" ["+dotroles(cond.values)+"]#"+content_after_marker
+            first_line.content = marker+" ["+dotroles(cond.values, attribute)+"]#"+content_after_marker
             last_line.append("#")
         elif cond.type == ConditionalType.GROUP_START_LIST_ITEM:
             logger.debug(f"  Branch: GROUP_START_LIST_ITEM - processing joint list item group")
@@ -69,7 +69,7 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                     raise RuntimeError(f"Classified as GROUP_START_LIST_ITEM but no marker found in state, line {first_line.id}")
                 # this is the first one in the group so it does get the marker
                 content_after_marker = first_line.content[len(marker)+1:] # remove marker and space after it
-                first_line.content = marker+" ["+dotroles(cond.values)+"]#"+content_after_marker
+                first_line.content = marker+" ["+dotroles(cond.values, attribute)+"]#"+content_after_marker
                 last_line.append("#")
 
                 # find the next id after the end line
@@ -92,7 +92,7 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
 
                     # this is a subsequent group member so it gets its marker removed
                     content_after_marker = first_line.content[len(marker)+1:] # remove marker and space after it
-                    first_line.content = "["+dotroles(cond.values)+"]#"+content_after_marker
+                    first_line.content = "["+dotroles(cond.values, attribute)+"]#"+content_after_marker
                     last_line.append("#")
 
                     # Update next_line_id for next iteration
@@ -122,7 +122,7 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                     clean_text = current_line.content.rstrip()
                     if not clean_text.endswith("]"):
                         raise RuntimeError(f"Line marked BLOCK_ATTRIBUTES but not ending with ], line {current_line.id}")
-                    current_line.content = clean_text[:-1]+","+attroles(cond.values)+"]" 
+                    current_line.content = clean_text[:-1]+","+attroles(cond.values, attribute)+"]" 
                     block_attributes_set = True
                 elif ((current_line_top_state.type, current_line_top_state.subtype) ==
                     (StateType.BLOCK_PREFIX, StateSubtype.BLOCK_TITLE)):
@@ -130,14 +130,14 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                     # for a block title: set block attributes if not present,
                     # also assume attributes carry over to block below
                     if not block_attributes_set:
-                        parsed.create_line_before(current_line, "["+attroles(cond.values)+"]")
+                        parsed.create_line_before(current_line, "["+attroles(cond.values, attribute)+"]")
                     block_attributes_set = True
                 elif ((current_line_top_state.type, current_line_top_state.subtype) ==
                     (StateType.PARAGRAPH, StateSubtype.FIRST_LINE)):
                     logger.debug(f"    Line {current_line.id}: PARAGRAPH start - creating attributes if needed")
                     # start of paragraph - set block attributes if not present, consume block attributes
                     if not block_attributes_set:
-                        parsed.create_line_before(current_line, "["+attroles(cond.values)+"]")
+                        parsed.create_line_before(current_line, "["+attroles(cond.values, attribute)+"]")
                     block_attributes_set = False
                 elif ((current_line_top_state.type, current_line_top_state.subtype) ==
                     (StateType.DELIMITED_BLOCK, StateSubtype.START)):
@@ -147,7 +147,7 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                     # then (in all cases) jump after the end of the block
                     if current_line_top_state.get("delimiter")[0] != "/":
                         if not block_attributes_set:
-                            parsed.create_line_before(current_line, "["+attroles(cond.values)+"]")
+                            parsed.create_line_before(current_line, "["+attroles(cond.values, attribute)+"]")
                         block_attributes_set = False
                     block_end_line_id = current_line_top_state.get("block_end_line")
                     if not block_end_line_id:
@@ -235,7 +235,7 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                             logger.debug(f"      Entire list is conditioned - creating block attributes and jumping over list")
                             # set block attributes if not present, consume block attributes
                             if not block_attributes_set:
-                                parsed.create_line_before(current_line, "["+attroles(cond.values)+"]")
+                                parsed.create_line_before(current_line, "["+attroles(cond.values, attribute)+"]")
                             block_attributes_set = False
                             current_line = line_after_list
                             continue
@@ -248,7 +248,7 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                     if not marker:
                         raise RuntimeError(f"Line classified as LIST_ITEM but no marker found in state, line {current_line.id}")
                     content_after_marker = current_line.content[len(marker)+1:] # remove marker and space after it
-                    current_line.content = marker+" ["+dotroles(cond.values)+"]#{empty}# "+content_after_marker
+                    current_line.content = marker+" ["+dotroles(cond.values, attribute)+"]#{empty}# "+content_after_marker
                     logger.debug(f"      Walking the contents of the list item")
                     list_start_line = current_line.state_stack.top().get("list_start_line")
                     line_after_list_item = parsed.next_line(current_line)
@@ -271,7 +271,7 @@ def process_conditionals(parsed: Parsed, cond_map: ConditionalsMap):
                     logger.debug(f"    Line {current_line.id}: SECTION_HEADER - creating block attributes (uncertain result)")
                     # we already warned the user this might get unpredictable
                     # now we just create the block attributes
-                    parsed.create_line_before(current_line, "["+attroles(cond.values)+"]")
+                    parsed.create_line_before(current_line, "["+attroles(cond.values, attribute)+"]")
                 else:
                     logger.debug(f"    Line {current_line.id}: Other type ({current_line_top_state.type.name}) - consuming block attributes if content line")
                     # consume block attributes unless the line is blank or non-text
@@ -307,6 +307,9 @@ def main():
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                        default='WARNING',
                        help="Set the logging level (default: WARNING)")
+    parser.add_argument("--attribute",
+                       default=DEFAULT_ATTRIBUTE,
+                       help=f"Attribute name to use for generated roles (default: {DEFAULT_ATTRIBUTE})")
 
     args = parser.parse_args()
 
@@ -361,7 +364,7 @@ def main():
             sys.exit(1)
 
     # Process conditionals
-    process_conditionals(parsed, cond_map)
+    process_conditionals(parsed, cond_map, args.attribute)
 
     # Remove the conditional lines themselves
     remove_conditionals(parsed, cond_map)
